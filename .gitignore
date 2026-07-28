@@ -209,6 +209,11 @@ tempCodeRunnerFile.py
 # PyPI configuration file
 .pypirc
 
+# TPS-FNO generated artifacts
+data/*/
+runs/
+reports/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

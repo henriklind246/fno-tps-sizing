@@ -37,6 +37,9 @@ def test_one_epoch_checkpoint_evaluation_and_sizing(
     for left, right in zip(model_a.parameters(), model_b.parameters()):
         torch.testing.assert_close(left, right)
     assert checkpoint["epoch"] == 0
+    assert checkpoint["selection_metrics"]["selection_key"] == (
+        report["checkpoint_selection"]["selection_key"]
+    )
 
     evaluation = evaluate_checkpoint(
         demo_config,
@@ -47,7 +50,27 @@ def test_one_epoch_checkpoint_evaluation_and_sizing(
         device="cpu",
     )
     assert evaluation["case_count"] == 1
+    assert evaluation["normalization_source"] == "checkpoint"
+    assert evaluation["false_feasible_count"] >= 0
+    assert evaluation["false_infeasible_count"] >= 0
+    assert evaluation["margin_error_p95_K"] >= 0.0
+    record = evaluation["records"][0]
+    assert record["false_feasible"] == (
+        record["predicted_feasible"] and not record["true_feasible"]
+    )
+    assert record["false_infeasible"] == (
+        not record["predicted_feasible"] and record["true_feasible"]
+    )
     assert Path(tmp_path / "evaluation.json").exists()
+
+    all_evaluation = evaluate_checkpoint(
+        demo_config,
+        data_dir,
+        report["best_checkpoint"],
+        split="all",
+        device="cpu",
+    )
+    assert all_evaluation["case_count"] == 3
 
     scenario_path = tmp_path / "scenarios.yaml"
     scenario_path.write_text(

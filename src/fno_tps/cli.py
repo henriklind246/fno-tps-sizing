@@ -202,7 +202,11 @@ def build_parser() -> argparse.ArgumentParser:
     _common(evaluate)
     evaluate.add_argument("--data", type=Path, required=True)
     evaluate.add_argument("--checkpoint", type=Path, required=True)
-    evaluate.add_argument("--split", choices=("train", "val", "test"), default="test")
+    evaluate.add_argument(
+        "--split",
+        choices=("train", "val", "test", "all"),
+        default="test",
+    )
     evaluate.add_argument("--output", type=Path, default=Path("reports/evaluation.json"))
     evaluate.add_argument("--device", default="auto")
 

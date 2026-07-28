@@ -608,6 +608,11 @@ class CausalTargetDataset(Dataset):
         nonzero = np.flatnonzero(self.bundle.times > 0.0)
         samples: list[tuple[int, int]] = []
         for case_id in self.case_ids:
+            # The initial condition is an exact, physically meaningful target:
+            # delta T(x, y, t=0) = 0. Include it once per case every epoch so
+            # the model cannot improve the transient fit while leaving the
+            # initial state unconstrained.
+            samples.append((int(case_id), 0))
             case = self.bundle.cases[int(case_id)]
             event_mask = np.zeros(len(self.bundle.times), dtype=bool)
             for event in case.heating_events:

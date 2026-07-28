@@ -83,6 +83,46 @@ def _structural_interface_trace(
     return right + flux_temperature * resistance_right
 
 
+def _checkpoint_selection_metrics(
+    validation: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the safety-first checkpoint ranking used during training.
+
+    False-feasible predictions are ranked first because they can understate
+    thermal risk. Remaining feasibility disagreements are the second
+    constraint. Among checkpoints with the same safety counts, selection
+    minimizes mean critical peak error plus the 95th-percentile margin error.
+    """
+    mean_error = float(validation["critical_mean_peak_error_K"])
+    tail_error = float(validation["margin_error_p95_K"])
+    false_feasible = int(validation["false_feasible_count"])
+    feasibility_disagreements = int(
+        validation["feasibility_disagreement_count"]
+    )
+    score = mean_error + tail_error
+    selection_key = (
+        false_feasible,
+        feasibility_disagreements,
+        score,
+        mean_error,
+    )
+    return {
+        "strategy": (
+            "lexicographic(false_feasible_count, "
+            "feasibility_disagreement_count, "
+            "critical_mean_peak_error_K + margin_error_p95_K, "
+            "critical_mean_peak_error_K)"
+        ),
+        "critical_mean_peak_error_K": mean_error,
+        "margin_error_p95_K": tail_error,
+        "checkpoint_selection_score_K": score,
+        "false_feasible_count": false_feasible,
+        "false_infeasible_count": int(validation["false_infeasible_count"]),
+        "feasibility_disagreement_count": feasibility_disagreements,
+        "selection_key": list(selection_key),
+    }
+
+
 def train_model(
     config: StudyConfig,
     data_dir: str | Path,
@@ -136,11 +176,19 @@ def train_model(
         "val_critical_mean_peak_error_K",
         "val_critical_max_peak_error_K",
         "val_margin_error_mean_K",
+        "val_margin_error_p95_K",
+        "val_margin_error_max_K",
         "val_margin_sign_disagreements",
+        "val_false_feasible_count",
+        "val_false_infeasible_count",
+        "val_feasibility_disagreement_count",
+        "val_checkpoint_selection_score_K",
         "epoch_seconds",
         "is_best",
     ]
     best_metric = float("inf")
+    best_selection_key: tuple[float, ...] | None = None
+    best_selection_metrics: dict[str, Any] | None = None
     bad_epochs = 0
     history: list[dict[str, Any]] = []
     start = time.perf_counter()
@@ -182,10 +230,18 @@ def train_model(
                 bundle,
                 resolved_device,
             )
-            selection = float(validation["critical_mean_peak_error_K"])
-            is_best = selection < best_metric
+            selection_metrics = _checkpoint_selection_metrics(validation)
+            selection_key = tuple(selection_metrics["selection_key"])
+            is_best = (
+                best_selection_key is None
+                or selection_key < best_selection_key
+            )
             if is_best:
-                best_metric = selection
+                best_metric = float(
+                    validation["critical_mean_peak_error_K"]
+                )
+                best_selection_key = selection_key
+                best_selection_metrics = selection_metrics
                 bad_epochs = 0
                 save_checkpoint(
                     best_path,
@@ -196,6 +252,7 @@ def train_model(
                     epoch,
                     best_metric,
                     bundle.normalization,
+                    selection_metrics,
                 )
             else:
                 bad_epochs += 1
@@ -208,6 +265,11 @@ def train_model(
                 epoch,
                 best_metric,
                 bundle.normalization,
+                {
+                    **selection_metrics,
+                    "is_best": bool(is_best),
+                    "best_selection_key": list(best_selection_key),
+                },
             )
             row = {
                 "epoch": epoch,
@@ -219,7 +281,17 @@ def train_model(
                 "val_critical_mean_peak_error_K": validation["critical_mean_peak_error_K"],
                 "val_critical_max_peak_error_K": validation["critical_max_peak_error_K"],
                 "val_margin_error_mean_K": validation["margin_error_mean_K"],
+                "val_margin_error_p95_K": validation["margin_error_p95_K"],
+                "val_margin_error_max_K": validation["margin_error_max_K"],
                 "val_margin_sign_disagreements": validation["margin_sign_disagreements"],
+                "val_false_feasible_count": validation["false_feasible_count"],
+                "val_false_infeasible_count": validation["false_infeasible_count"],
+                "val_feasibility_disagreement_count": validation[
+                    "feasibility_disagreement_count"
+                ],
+                "val_checkpoint_selection_score_K": selection_metrics[
+                    "checkpoint_selection_score_K"
+                ],
                 "epoch_seconds": time.perf_counter() - epoch_start,
                 "is_best": int(is_best),
             }
@@ -244,6 +316,11 @@ def train_model(
         "epochs_completed": len(history),
         "wall_seconds": time.perf_counter() - start,
         "best_checkpoint": str(best_path.resolve()),
+        "checkpoint_selection": (
+            best_checkpoint.get("selection_metrics")
+            or best_selection_metrics
+            or _checkpoint_selection_metrics(final_validation)
+        ),
         "validation": final_validation,
     }
     (destination / "final_metrics.json").write_text(

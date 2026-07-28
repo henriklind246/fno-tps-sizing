@@ -138,6 +138,7 @@ def save_checkpoint(
     epoch: int,
     best_metric: float,
     normalization: dict[str, float],
+    selection_metrics: dict[str, Any] | None = None,
 ) -> None:
     torch.save(
         {
@@ -150,6 +151,11 @@ def save_checkpoint(
             "optimizer_state": optimizer.state_dict(),
             "scheduler_state": scheduler.state_dict(),
             "normalization": dict(normalization),
+            "selection_metrics": (
+                dict(selection_metrics)
+                if selection_metrics is not None
+                else None
+            ),
             "torch_rng_state": torch.get_rng_state(),
             "numpy_rng_state": np.random.get_state(),
             "python_rng_state": random.getstate(),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 import json
@@ -74,8 +75,14 @@ def evaluate_loader(
     records: list[dict[str, Any]] = []
     bond_errors: list[float] = []
     structural_errors: list[float] = []
+    critical_peak_errors: list[float] = []
     margin_errors: list[float] = []
     margin_sign_disagreements = 0
+    false_feasible_count = 0
+    false_infeasible_count = 0
+    feasibility_disagreement_count = 0
+    true_distances_to_limit: list[float] = []
+    predicted_distances_to_limit: list[float] = []
     t0_max_errors: list[float] = []
     for case_id in sorted(prediction_by_case):
         prediction_delta = prediction_by_case[case_id]
@@ -101,6 +108,7 @@ def evaluate_loader(
         )
         bond_errors.append(bond_error)
         structural_errors.append(structural_error)
+        critical_peak_errors.append(max(bond_error, structural_error))
         t0_error = float(np.max(np.abs(prediction_delta[0])))
         t0_max_errors.append(t0_error)
 
@@ -126,6 +134,28 @@ def evaluate_loader(
             or (struct_pred_margin >= 0.0) != (struct_true_margin >= 0.0)
         )
         margin_sign_disagreements += int(sign_disagreement)
+        predicted_feasible = (
+            bond_pred_margin >= 0.0 and struct_pred_margin >= 0.0
+        )
+        true_feasible = (
+            bond_true_margin >= 0.0 and struct_true_margin >= 0.0
+        )
+        false_feasible = predicted_feasible and not true_feasible
+        false_infeasible = not predicted_feasible and true_feasible
+        feasibility_disagreement = predicted_feasible != true_feasible
+        false_feasible_count += int(false_feasible)
+        false_infeasible_count += int(false_infeasible)
+        feasibility_disagreement_count += int(feasibility_disagreement)
+        true_distance_to_limit = min(
+            abs(bond_true_margin),
+            abs(struct_true_margin),
+        )
+        predicted_distance_to_limit = min(
+            abs(bond_pred_margin),
+            abs(struct_pred_margin),
+        )
+        true_distances_to_limit.append(true_distance_to_limit)
+        predicted_distances_to_limit.append(predicted_distance_to_limit)
         records.append({
             "case_index": case_id,
             "case_id": case.case_id,
@@ -148,6 +178,22 @@ def evaluate_loader(
                 prediction_qoi["structural_interface_peak_y"]
                 - target_qoi["structural_interface_peak_y"]
             ),
+            "true_bond_margin_K": bond_true_margin,
+            "predicted_bond_margin_K": bond_pred_margin,
+            "true_structural_margin_K": struct_true_margin,
+            "predicted_structural_margin_K": struct_pred_margin,
+            "true_minimum_margin_K": min(bond_true_margin, struct_true_margin),
+            "predicted_minimum_margin_K": min(
+                bond_pred_margin,
+                struct_pred_margin,
+            ),
+            "true_distance_to_limit_K": true_distance_to_limit,
+            "predicted_distance_to_limit_K": predicted_distance_to_limit,
+            "true_feasible": bool(true_feasible),
+            "predicted_feasible": bool(predicted_feasible),
+            "false_feasible": bool(false_feasible),
+            "false_infeasible": bool(false_infeasible),
+            "feasibility_disagreement": bool(feasibility_disagreement),
             "margin_error_K": case_margin_error,
             "margin_sign_disagreement": bool(sign_disagreement),
             "t0_max_abs_delta_T_K": t0_error,
@@ -157,6 +203,16 @@ def evaluate_loader(
     mean_structural = (
         float(np.mean(structural_errors)) if structural_errors else float("nan")
     )
+
+    def percentile(values: list[float], quantile: float) -> float:
+        return (
+            float(np.percentile(values, quantile))
+            if values
+            else float("nan")
+        )
+
+    critical_mean = 0.5 * (mean_bond + mean_structural)
+    margin_error_p95 = percentile(margin_errors, 95.0)
     return {
         "field_rmse_K": float(np.sqrt(total_squared / max(total_count, 1))),
         "tps_rmse_K": float(np.sqrt(region_squared["tps"] / max(region_count["tps"], 1))),
@@ -166,10 +222,42 @@ def evaluate_loader(
         ),
         "bond_peak_mae_K": mean_bond,
         "structural_peak_mae_K": mean_structural,
-        "critical_mean_peak_error_K": 0.5 * (mean_bond + mean_structural),
+        "critical_mean_peak_error_K": critical_mean,
         "critical_max_peak_error_K": max(mean_bond, mean_structural),
+        "critical_peak_error_p90_K": percentile(critical_peak_errors, 90.0),
+        "critical_peak_error_p95_K": percentile(critical_peak_errors, 95.0),
+        "critical_peak_error_max_K": (
+            max(critical_peak_errors) if critical_peak_errors else float("nan")
+        ),
         "margin_error_mean_K": float(np.mean(margin_errors)) if margin_errors else float("nan"),
+        "margin_error_p90_K": percentile(margin_errors, 90.0),
+        "margin_error_p95_K": margin_error_p95,
+        "margin_error_max_K": max(margin_errors) if margin_errors else float("nan"),
         "margin_sign_disagreements": margin_sign_disagreements,
+        "false_feasible_count": false_feasible_count,
+        "false_infeasible_count": false_infeasible_count,
+        "feasibility_disagreement_count": feasibility_disagreement_count,
+        "true_distance_to_limit_mean_K": (
+            float(np.mean(true_distances_to_limit))
+            if true_distances_to_limit
+            else float("nan")
+        ),
+        "true_distance_to_limit_min_K": (
+            min(true_distances_to_limit)
+            if true_distances_to_limit
+            else float("nan")
+        ),
+        "predicted_distance_to_limit_mean_K": (
+            float(np.mean(predicted_distances_to_limit))
+            if predicted_distances_to_limit
+            else float("nan")
+        ),
+        "predicted_distance_to_limit_min_K": (
+            min(predicted_distances_to_limit)
+            if predicted_distances_to_limit
+            else float("nan")
+        ),
+        "checkpoint_selection_score_K": critical_mean + margin_error_p95,
         "t0_max_abs_delta_T_K": max(t0_max_errors) if t0_max_errors else float("nan"),
         "case_count": len(records),
         "records": records,
@@ -191,15 +279,48 @@ def evaluate_checkpoint(
         raise ValueError("Dataset study configuration does not match the evaluation configuration.")
     if checkpoint["study"] != config.as_dict():
         raise ValueError("Checkpoint study configuration does not match the evaluation configuration.")
+    if "normalization" not in checkpoint:
+        raise ValueError("Checkpoint does not contain its training normalization.")
+    dataset_normalization = dict(bundle.normalization)
+    evaluation_normalization = {
+        key: float(value)
+        for key, value in checkpoint["normalization"].items()
+    }
+    splits = dict(bundle.splits)
+    if split == "all":
+        splits["test"] = np.arange(len(bundle.cases), dtype=np.int64)
+        loader_name = "test"
+    elif split in ("train", "val", "test"):
+        loader_name = split
+    else:
+        raise ValueError(f"Unknown evaluation split {split!r}.")
+    evaluation_bundle = replace(
+        bundle,
+        splits=splits,
+        normalization=evaluation_normalization,
+    )
     representation = model.config.representation
-    loaders = create_dataloaders(config, bundle, representation)
-    loader = {"train": loaders[0], "val": loaders[1], "test": loaders[2]}[split]
-    report = evaluate_loader(model, loader, config, bundle, next(model.parameters()).device)
+    loaders = create_dataloaders(config, evaluation_bundle, representation)
+    loader = {
+        "train": loaders[0],
+        "val": loaders[1],
+        "test": loaders[2],
+    }[loader_name]
+    report = evaluate_loader(
+        model,
+        loader,
+        config,
+        evaluation_bundle,
+        next(model.parameters()).device,
+    )
     report.update({
         "split": split,
         "checkpoint": str(Path(checkpoint_path).resolve()),
         "representation": representation,
         "checkpoint_epoch": int(checkpoint["epoch"]),
+        "normalization_source": "checkpoint",
+        "checkpoint_normalization": evaluation_normalization,
+        "dataset_normalization": dataset_normalization,
         "dataset_validity": bundle.manifest["validity"],
     })
     if output_path is not None:

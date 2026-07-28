@@ -1,0 +1,99 @@
+study_id: null
+authoritative: false
+seed: 0
+initial_temperature: null
+lateral_length: null
+bond_thickness: null
+backing_thickness: null
+thickness_candidates: null
+limits:
+  bond_temperature: null
+  structural_interface_temperature: null
+validity:
+  tps_property_model: constant_effective
+  hot_face:
+    study_temperature_limit: 1400.0
+    material_multiple_use_limit: 1590.0
+  property_tables:
+    allow_extrapolation: false
+    minimum_temperature: 300.0
+    maximum_temperature: null
+  max_property_relative_deviation: null
+  conductivity_reference_pressure: null
+  reject_cases_outside_validity: true
+  reject_on_property_extrapolation: true
+  reject_on_nonlinear_failure: true
+  reject_on_nonphysical_temperature: true
+  reject_on_energy_residual: true
+  minimum_physical_temperature: 0.0
+  max_relative_energy_residual: 1.0e-7
+surface:
+  # Use prescribed_net_heat_flux with emissivity 0 for an already-net load, or
+  # incident_heat_flux_with_reradiation with a positive constant emissivity.
+  model: null
+  emissivity_model: constant
+  emissivity: null
+  coating: null
+  condition: null
+  emissivity_quantity: total_hemispherical
+  emissivity_basis: null
+  emissivity_source: null
+  emissivity_source_url: null
+  emissivity_authoritative: false
+  emissivity_temperature_min: null
+  emissivity_temperature_max: null
+  radiation_sink_temperature: null
+  stefan_boltzmann_constant: 5.670374419e-8
+  nonlinear_absolute_flux_tolerance: 1.0e-7
+  nonlinear_relative_tolerance: 1.0e-10
+  nonlinear_max_iterations: 100
+  nonlinear_relaxation: 0.80
+  # Required as coupled_nonlinear for temperature-dependent properties.
+  radiation_coupling: boundary_response
+recent_window_fraction: 0.10
+cases_per_stratum: 12
+max_stage_a_cases: 1500
+materials:
+  # For a table model replace tps with:
+  # model: temperature_dependent_table
+  # reference_k: ...
+  # reference_k_y: ...
+  # reference_rho_c: ...
+  # property_table: {path: ..., version: ..., content_sha256: ..., extrapolation: reject,
+  #                  interpolation: linear, reference_temperature: ...}
+  tps: {k: null, rho_c: null}
+  backing: {k: null, rho_c: null}
+solver:
+  nonlinear:
+    max_iterations: 25
+    residual_temperature_tolerance: 1.0e-8
+    update_temperature_tolerance: 1.0e-8
+    update_relative_tolerance: 1.0e-10
+    initial_damping: 1.0
+    minimum_damping: 0.015625
+    max_temperature_step: 250.0
+    armijo_c: 1.0e-4
+    max_backtracks: 6
+bond:
+  k0: null
+  k_min: null
+  rho_c: null
+  severity: null
+  y_center: null
+  sigma: null
+  max_defects: 2
+heating:
+  interpretation: null
+  amplitude: null
+  y_center: null
+  t_center: null
+  sigma_y: null
+  sigma_t: null
+  max_events: 3
+mesh: {nx_tps: null, nx_bond: null, nx_back: null, ny: null}
+time:
+  dt: null
+  t_final: null
+  save_stride: null
+  horizon_candidates: null
+training: {}

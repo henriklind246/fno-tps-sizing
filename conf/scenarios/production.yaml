@@ -1,0 +1,79 @@
+# Reproducible sizing scenarios selected from the held-out test split of
+# data/production. They are the most FV-critical three-event cases at 3 mm
+# with zero, one, and two bond defects, respectively. The forcing and defect
+# parameters are copied exactly from cases.jsonl; sizing replays each scenario
+# over every configured TPS thickness.
+scenario_set_id: li900-rcg-production-heldout-sizing-v1
+authoritative: true
+source_dataset: data/production
+source_study_config_sha256: 6a74026fd973dbe9a0c4b7f5ef14f5522bd9e34b00634993776db9803b9edab3
+selection_rule: most FV-critical held-out three-event case at 3 mm by defect count
+scenarios:
+  - scenario_id: heldout-triple-no-defect
+    source_case_id: train-000082
+    heating_events:
+      - amplitude: 47695.17444367407
+        y_center: 0.08753998000710987
+        t_center: 232.30036035595674
+        sigma_y: 0.02609648216104352
+        sigma_t: 65.8342388603457
+      - amplitude: 56095.311724574916
+        y_center: 0.1580100491191525
+        t_center: 178.0472014591691
+        sigma_y: 0.020816327573890743
+        sigma_t: 30.5231161509556
+      - amplitude: 57637.17080872552
+        y_center: 0.10242760804551926
+        t_center: 175.67190037571868
+        sigma_y: 0.013271318126985997
+        sigma_t: 102.97879181965926
+    bond_defects: []
+
+  - scenario_id: heldout-triple-one-defect
+    source_case_id: train-000908
+    heating_events:
+      - amplitude: 30657.898211264117
+        y_center: 0.13488855686751927
+        t_center: 146.8327519768807
+        sigma_y: 0.030941110179410293
+        sigma_t: 75.25925537072021
+      - amplitude: 29585.636897607765
+        y_center: 0.13990351419088085
+        t_center: 127.03483980169592
+        sigma_y: 0.018882463947912636
+        sigma_t: 64.50148420191245
+      - amplitude: 45531.41211229141
+        y_center: 0.12233954987381805
+        t_center: 227.0642143225436
+        sigma_y: 0.03470311646712023
+        sigma_t: 119.90387004668179
+    bond_defects:
+      - severity: 0.6582297013178204
+        y_center: 0.04332787217452096
+        sigma: 0.019482198712485015
+
+  - scenario_id: heldout-triple-two-defects
+    source_case_id: train-000070
+    heating_events:
+      - amplitude: 58249.4789918368
+        y_center: 0.09781162616346059
+        t_center: 208.5224628754275
+        sigma_y: 0.034337380691527156
+        sigma_t: 69.61438059649737
+      - amplitude: 42424.15481231016
+        y_center: 0.08439812414166374
+        t_center: 177.7000514573496
+        sigma_y: 0.013621452389045935
+        sigma_t: 90.28357943317192
+      - amplitude: 59346.39118566868
+        y_center: 0.07412765614880906
+        t_center: 153.79728986608825
+        sigma_y: 0.030594805677191743
+        sigma_t: 31.013647525493766
+    bond_defects:
+      - severity: 0.6602287218836138
+        y_center: 0.09491460005541015
+        sigma: 0.01882040880532468
+      - severity: 0.48169585007472726
+        y_center: 0.12356630371132153
+        sigma: 0.01412269351593166

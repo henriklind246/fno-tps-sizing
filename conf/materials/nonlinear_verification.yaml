@@ -1,0 +1,11 @@
+name: Synthetic nonlinear MMS material
+version: MMS-1
+source: Synthetic verification table; not material data
+authoritative: false
+interpolation: linear
+density: 1.0
+pressure_Pa: 101325.0
+pressure_basis: "synthetic fixed-pressure verification condition"
+temperature: [250.0, 550.0]
+conductivity: [0.4, 1.6]
+specific_heat: [0.7, 1.3]

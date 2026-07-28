@@ -1,0 +1,35 @@
+name: LI-900 rigid tile with RCG Class-2 hot face
+version: TPSX-LI900-RCG-1ATM-v1
+source: NASA Ames TPSX LI-900 records, properties 4, 5, and 9
+authoritative: true
+material_system: virgin/as-fabricated LI-900 substrate; RCG Class-2 coating represented by the surface boundary model
+interpolation: linear
+density: 144.0
+density_uncertainty: 2.11
+pressure_Pa: 101330.0
+pressure_basis: Conservative fixed air-filled condition selected from the five TPSX pressure families; not a trajectory pore-pressure reconstruction
+conductivity:
+  x:
+    label: through-thickness
+    units: W/m-K
+    source_url: https://tpsx.arc.nasa.gov/MaterialProperty?id=1&property=4
+    uncertainty_basis: TPSX reports +/-18% for this selected pressure family
+    temperature: [116.667, 255.556, 394.444, 533.333, 672.222, 811.111, 950.0, 1088.89, 1227.78, 1366.67, 1533.33, 1644.44, 1811.11, 1922.22]
+    values: [0.0403, 0.0476, 0.0590, 0.0750, 0.0924, 0.114, 0.135, 0.163, 0.196, 0.235, 0.289, 0.336, 0.419, 0.502]
+    uncertainty: [0.00726, 0.00857, 0.0106, 0.0135, 0.0166, 0.0205, 0.0244, 0.0294, 0.0352, 0.0424, 0.0520, 0.0604, 0.0754, 0.0904]
+  y:
+    label: in-plane
+    units: W/m-K
+    source_url: https://tpsx.arc.nasa.gov/MaterialProperty?id=1&property=5
+    uncertainty_basis: TPSX reports +/-18% for this selected pressure family
+    temperature: [116.667, 255.556, 394.444, 533.333, 672.222, 811.111, 950.0, 1088.89, 1227.78, 1366.67, 1533.33]
+    values: [0.0519, 0.0675, 0.0814, 0.0987, 0.121, 0.152, 0.192, 0.242, 0.303, 0.383, 0.499]
+    uncertainty: [0.00935, 0.0122, 0.0146, 0.0178, 0.0218, 0.0274, 0.0346, 0.0436, 0.0545, 0.0689, 0.0897]
+specific_heat:
+  label: specific heat
+  units: J/kg-K
+  source_url: https://tpsx.arc.nasa.gov/MaterialProperty?id=1&property=9
+  uncertainty_basis: Values reproduced exactly from the TPSX uncertainty column; see SOURCE_MANIFEST.md for the note/column inconsistency
+  temperature: [116.483, 172.039, 255.372, 394.261, 533.15, 672.039, 810.928, 949.817, 1088.71, 1199.82, 1227.59, 1366.48, 1533.15, 1922.04]
+  values: [293.0, 440.0, 628.0, 879.0, 1060.0, 1150.0, 1210.0, 1240.0, 1260.0, 1260.0, 1270.0, 1270.0, 1270.0, 1270.0]
+  uncertainty: [84.0, 84.0, 84.0, 158.0, 190.0, 207.0, 217.0, 223.0, 226.0, 228.0, 228.0, 228.0, 228.0, 228.0]

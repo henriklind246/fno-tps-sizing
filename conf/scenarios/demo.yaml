@@ -1,0 +1,21 @@
+scenario_set_id: li900-rtv560-al-demo-sizing-v1
+authoritative: false
+scenarios:
+  - scenario_id: centered-single
+    heating_events:
+      - {amplitude: 3500.0, y_center: 0.10, t_center: 60.0, sigma_y: 0.025, sigma_t: 14.0}
+    bond_defects: []
+  - scenario_id: defect-aligned
+    heating_events:
+      - {amplitude: 4800.0, y_center: 0.07, t_center: 50.0, sigma_y: 0.018, sigma_t: 12.0}
+      - {amplitude: 2500.0, y_center: 0.13, t_center: 95.0, sigma_y: 0.030, sigma_t: 18.0}
+    bond_defects:
+      - {severity: 0.85, y_center: 0.07, sigma: 0.012}
+  - scenario_id: overlapping-triple
+    heating_events:
+      - {amplitude: 2500.0, y_center: 0.06, t_center: 45.0, sigma_y: 0.020, sigma_t: 10.0}
+      - {amplitude: 3200.0, y_center: 0.10, t_center: 70.0, sigma_y: 0.025, sigma_t: 14.0}
+      - {amplitude: 2300.0, y_center: 0.14, t_center: 95.0, sigma_y: 0.020, sigma_t: 12.0}
+    bond_defects:
+      - {severity: 0.65, y_center: 0.09, sigma: 0.015}
+      - {severity: 0.50, y_center: 0.14, sigma: 0.010}

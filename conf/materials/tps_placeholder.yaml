@@ -1,0 +1,11 @@
+name: LI-900-like placeholder
+version: PLACEHOLDER-0
+source: PLACEHOLDER — replace with published tabulated data before use
+authoritative: false
+interpolation: linear
+density: 144.0
+pressure_Pa: 101325.0
+pressure_basis: "PLACEHOLDER — not a measured condition"
+temperature: [300.0, 1600.0]
+conductivity: [0.0596, 0.0596]
+specific_heat: [835.4166666666666, 835.4166666666666]

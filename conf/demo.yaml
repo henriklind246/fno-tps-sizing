@@ -1,0 +1,100 @@
+study_id: tps_fno_li900_rtv560_al_demo_v1
+authoritative: false
+seed: 42
+initial_temperature: 300.0
+lateral_length: 0.20
+bond_thickness: 2.5e-4
+backing_thickness: 2.0e-3
+thickness_candidates:
+  - 0.003
+  - 0.005
+  - 0.007
+  - 0.009
+  - 0.012
+  - 0.015
+  - 0.018
+  - 0.021
+  - 0.024
+limits:
+  # Conservative benchmark constraint, not the RTV material-use limit.
+  bond_temperature: 450.0
+  structural_interface_temperature: 400.0
+validity:
+  tps_property_model: constant_effective
+  hot_face:
+    study_temperature_limit: 1400.0
+    material_multiple_use_limit: 1590.0
+  property_tables:
+    allow_extrapolation: false
+    minimum_temperature: 300.0
+    maximum_temperature: null
+  max_property_relative_deviation: 0.20
+  conductivity_reference_pressure: 101325.0
+  reject_cases_outside_validity: true
+  reject_on_property_extrapolation: true
+  reject_on_nonlinear_failure: true
+  reject_on_nonphysical_temperature: true
+  reject_on_energy_residual: true
+  minimum_physical_temperature: 0.0
+  max_relative_energy_residual: 1.0e-7
+recent_window_fraction: 0.10
+cases_per_stratum: 12
+max_stage_a_cases: 1500
+materials:
+  # Legacy constant-property regression values. This configuration is
+  # non-authoritative and is not the nonlinear production study.
+  tps:
+    k: 5.96e-2
+    rho_c: 1.203e5
+  # Simplified aluminum backing.
+  backing:
+    k: 226.0
+    rho_c: 2.484e6
+bond:
+  # RTV-560-like finite bond with bounded linear Gaussian degradation.
+  k0: 0.397
+  k_min: 0.040
+  rho_c: 1.6497e6
+  severity: {min: 0.40, max: 0.90}
+  y_center: {min: 0.030, max: 0.170}
+  sigma: {min: 0.010, max: 0.025}
+  max_defects: 2
+heating:
+  # Effective net inward conductive heat flux after unresolved surface losses.
+  interpretation: effective_net_inward_conductive_heat_flux
+  amplitude: {min: 2.0e3, max: 5.0e3}
+  y_center: {min: 0.040, max: 0.160}
+  t_center: {min: 30.0, max: 120.0}
+  sigma_y: {min: 0.012, max: 0.035}
+  sigma_t: {min: 8.0, max: 20.0}
+  max_events: 3
+mesh:
+  nx_tps: 48
+  nx_bond: 4
+  nx_back: 8
+  ny: 96
+time:
+  dt: 0.25
+  t_final: 300.0
+  save_stride: 8
+  horizon_candidates: [180.0, 240.0, 300.0, 420.0]
+training:
+  batch_size: 16
+  epochs: 100
+  learning_rate: 5.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  patience: 15
+  targets_per_case: 4
+  seed: 42
+  modes1: 16
+  modes2: 24
+  width: 64
+  layers: 4
+  cond_hidden: 128
+  temporal_hidden: 64
+  forcing_embed_dim: 16
+  temporal_samples: 128
+  dropout: 0.0
+  bond_loss_weight: 0.0
+  interface_loss_weight: 0.0

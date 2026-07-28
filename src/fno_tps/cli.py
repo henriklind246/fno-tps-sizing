@@ -209,6 +209,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluate.add_argument("--output", type=Path, default=Path("reports/evaluation.json"))
     evaluate.add_argument("--device", default="auto")
+    evaluate.add_argument(
+        "--safety-buffer-k",
+        type=float,
+        default=None,
+        help="Explicit nonnegative feasibility buffer in kelvin.",
+    )
+    evaluate.add_argument(
+        "--calibration-split",
+        choices=("val", "test"),
+        default=None,
+        help=(
+            "Estimate the safety buffer from this dedicated split's "
+            "optimistic-margin errors."
+        ),
+    )
+    evaluate.add_argument(
+        "--calibration-quantile",
+        type=float,
+        default=99.0,
+        help="Optimistic-margin-error percentile used as the calibrated buffer.",
+    )
+    evaluate.add_argument(
+        "--near-boundary-limit-k",
+        type=float,
+        default=10.0,
+        help="Absolute true-margin band used for near-boundary diagnostics.",
+    )
 
     size = subparsers.add_parser("size", help="Run the full surrogate/FV sizing matrix.")
     _common(size)
@@ -218,6 +245,15 @@ def build_parser() -> argparse.ArgumentParser:
     size.add_argument("--allow-demo", action="store_true")
     size.add_argument("--device", default="auto")
     size.add_argument("--batch-size", type=int, default=64)
+    size.add_argument(
+        "--safety-buffer-k",
+        type=float,
+        default=0.0,
+        help=(
+            "Require both surrogate margins to exceed this buffer; otherwise "
+            "route nonnegative near-boundary cases to FV verification."
+        ),
+    )
 
     figures = subparsers.add_parser(
         "figures",
@@ -347,6 +383,10 @@ def main(argv: list[str] | None = None) -> int:
             args.output,
             split=args.split,
             device=args.device,
+            safety_buffer_K=args.safety_buffer_k,
+            calibration_split=args.calibration_split,
+            calibration_quantile=args.calibration_quantile,
+            near_boundary_limit_K=args.near_boundary_limit_k,
         )
     elif args.command == "size":
         report = run_full_sizing(
@@ -357,6 +397,7 @@ def main(argv: list[str] | None = None) -> int:
             allow_demo=args.allow_demo,
             device=args.device,
             batch_size=args.batch_size,
+            safety_buffer_K=args.safety_buffer_k,
         )
     else:
         config.require_authoritative(allow_demo=args.allow_demo)

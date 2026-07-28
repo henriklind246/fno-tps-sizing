@@ -157,6 +157,9 @@ class FNOConfig:
     padding: int = 8
     padding_mode: str = "replicate"
     cin_exclude_padding: bool = True
+    hard_initial_condition: bool = False
+    initial_delta_temperature_norm: float = 0.0
+    initial_condition_gate_tau: float = 1.0
 
     @property
     def spatial_channels(self) -> int:
@@ -171,8 +174,22 @@ class FNOConfig:
         cls,
         study: StudyConfig,
         representation: Representation,
+        normalization: dict[str, float] | None = None,
+        *,
+        hard_initial_condition: bool = True,
     ) -> "FNOConfig":
         training = study.training
+        saved_times = study.time.saved_times()
+        positive_times = [value for value in saved_times if value > 0.0]
+        if not positive_times:
+            raise ValueError("Hard initial-condition gating requires a positive saved time.")
+        if normalization is None:
+            initial_delta_temperature_norm = 0.0
+        else:
+            initial_delta_temperature_norm = (
+                -float(normalization["delta_t_mean"])
+                / float(normalization["delta_t_std"])
+            )
         return cls(
             representation=representation,
             modes1=training.modes1,
@@ -183,6 +200,9 @@ class FNOConfig:
             temporal_hidden=training.temporal_hidden,
             forcing_embed_dim=training.forcing_embed_dim,
             dropout=training.dropout,
+            hard_initial_condition=hard_initial_condition,
+            initial_delta_temperature_norm=initial_delta_temperature_norm,
+            initial_condition_gate_tau=positive_times[0] / study.time.t_final,
         )
 
 
@@ -240,6 +260,30 @@ class TPSFNO(nn.Module):
         self.output = nn.Linear(128, 1)
         self.activation = nn.GELU()
         self.dropout = nn.Dropout(config.dropout) if config.dropout > 0.0 else nn.Identity()
+
+    def enforce_initial_condition(
+        self,
+        raw_prediction: torch.Tensor,
+        cond_static: torch.Tensor,
+    ) -> torch.Tensor:
+        """Make physical delta T exactly zero at t=0 with a short sine gate.
+
+        The network output and training targets use affine-normalized
+        temperature rise. Therefore the normalized value corresponding to
+        physical delta T=0 is generally nonzero.
+        """
+        if not self.config.hard_initial_condition:
+            return raw_prediction
+        tau_gate = float(self.config.initial_condition_gate_tau)
+        if not 0.0 < tau_gate <= 1.0:
+            raise ValueError("initial_condition_gate_tau must lie in (0, 1].")
+        tau = cond_static[:, 1]
+        u = torch.clamp(tau / tau_gate, min=0.0, max=1.0)
+        gate = torch.sin(0.5 * torch.pi * u)[:, None, None, None]
+        initial = raw_prediction.new_tensor(
+            self.config.initial_delta_temperature_norm
+        )
+        return initial + gate * (raw_prediction - initial)
 
     def encode_forcing(self, forcing_seq: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         if forcing_seq.ndim != 4 or forcing_seq.shape[-1] != 2:
@@ -308,8 +352,24 @@ class TPSFNO(nn.Module):
             hidden = self.dropout(self.activation(hidden))
         hidden = hidden[:, :, :nx, :ny].permute(0, 2, 3, 1)
         hidden = self.dropout(self.activation(self.projection(hidden)))
-        return self.output(hidden)
+        return self.enforce_initial_condition(
+            self.output(hidden),
+            cond_static,
+        )
 
 
-def build_model(study: StudyConfig, representation: Representation) -> TPSFNO:
-    return TPSFNO(FNOConfig.from_study(study, representation))
+def build_model(
+    study: StudyConfig,
+    representation: Representation,
+    normalization: dict[str, float] | None = None,
+    *,
+    hard_initial_condition: bool = True,
+) -> TPSFNO:
+    return TPSFNO(
+        FNOConfig.from_study(
+            study,
+            representation,
+            normalization,
+            hard_initial_condition=hard_initial_condition,
+        )
+    )

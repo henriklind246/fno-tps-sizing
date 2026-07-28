@@ -139,30 +139,34 @@ def save_checkpoint(
     best_metric: float,
     normalization: dict[str, float],
     selection_metrics: dict[str, Any] | None = None,
+    *,
+    include_training_state: bool = True,
 ) -> None:
-    torch.save(
-        {
-            "epoch": int(epoch),
-            "best_metric": float(best_metric),
-            "study": study.as_dict(),
-            "material_properties": study.property_provenance,
-            "model_config": asdict(model.config),
-            "model_state": model.state_dict(),
+    payload = {
+        "epoch": int(epoch),
+        "best_metric": float(best_metric),
+        "study": study.as_dict(),
+        "material_properties": study.property_provenance,
+        "model_config": asdict(model.config),
+        "model_state": model.state_dict(),
+        "normalization": dict(normalization),
+        "selection_metrics": (
+            dict(selection_metrics)
+            if selection_metrics is not None
+            else None
+        ),
+        "resume_capable": bool(include_training_state),
+        "transfer_source_revision": TRANSFER_SOURCE_REVISION,
+    }
+    if include_training_state:
+        payload.update({
             "optimizer_state": optimizer.state_dict(),
             "scheduler_state": scheduler.state_dict(),
-            "normalization": dict(normalization),
-            "selection_metrics": (
-                dict(selection_metrics)
-                if selection_metrics is not None
-                else None
-            ),
             "torch_rng_state": torch.get_rng_state(),
             "numpy_rng_state": np.random.get_state(),
             "python_rng_state": random.getstate(),
-            "transfer_source_revision": TRANSFER_SOURCE_REVISION,
-        },
-        Path(path),
-    )
+        })
+    torch.save(payload, Path(path))
 
 
 def load_model_checkpoint(

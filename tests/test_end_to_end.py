@@ -40,6 +40,24 @@ def test_one_epoch_checkpoint_evaluation_and_sizing(
     assert checkpoint["selection_metrics"]["selection_key"] == (
         report["checkpoint_selection"]["selection_key"]
     )
+    assert checkpoint["model_config"]["hard_initial_condition"]
+    assert report["initial_condition"]["t0_in_training_targets"] is False
+    assert report["checkpoint_archive"]["checkpoint_count"] == 1
+    assert report["checkpoint_archive"]["model_only"]
+    _, archived_checkpoint = load_model_checkpoint(
+        report["pareto_frontier"][0]["checkpoint"]
+    )
+    assert archived_checkpoint["resume_capable"] is False
+    assert "optimizer_state" not in archived_checkpoint
+    assert checkpoint["resume_capable"] is True
+    assert set(report["checkpoint_candidates"]) == {
+        "lowest_field_rmse",
+        "lowest_critical_peak_error",
+        "lowest_optimistic_margin_tail",
+        "best_continuous_composite",
+        "latest",
+    }
+    assert len(report["pareto_frontier"]) == 1
 
     evaluation = evaluate_checkpoint(
         demo_config,
@@ -54,6 +72,9 @@ def test_one_epoch_checkpoint_evaluation_and_sizing(
     assert evaluation["false_feasible_count"] >= 0
     assert evaluation["false_infeasible_count"] >= 0
     assert evaluation["margin_error_p95_K"] >= 0.0
+    assert evaluation["optimistic_margin_error_p99_K"] >= 0.0
+    assert evaluation["safety_buffer_K"] == 0.0
+    assert evaluation["t0_max_abs_delta_T_K"] < 1.0e-5
     record = evaluation["records"][0]
     assert record["false_feasible"] == (
         record["predicted_feasible"] and not record["true_feasible"]
@@ -61,7 +82,37 @@ def test_one_epoch_checkpoint_evaluation_and_sizing(
     assert record["false_infeasible"] == (
         not record["predicted_feasible"] and record["true_feasible"]
     )
+    assert record["optimistic_margin_error_K"] == max(
+        0.0,
+        record["predicted_minimum_margin_K"]
+        - record["true_minimum_margin_K"],
+    )
     assert Path(tmp_path / "evaluation.json").exists()
+
+    calibrated = evaluate_checkpoint(
+        demo_config,
+        data_dir,
+        report["best_checkpoint"],
+        split="test",
+        device="cpu",
+        calibration_split="val",
+        calibration_quantile=95.0,
+    )
+    assert calibrated["safety_buffer_source"] == "calibration_split"
+    assert calibrated["safety_calibration"]["split"] == "val"
+    assert calibrated["safety_buffer_K"] >= 0.0
+    for calibrated_record in calibrated["records"]:
+        predicted_margin = calibrated_record["predicted_minimum_margin_K"]
+        if predicted_margin < 0.0:
+            expected_classification = "surrogate_infeasible"
+        elif predicted_margin > calibrated["safety_buffer_K"]:
+            expected_classification = "surrogate_feasible"
+        else:
+            expected_classification = "near_boundary_fv_required"
+        assert (
+            calibrated_record["buffered_classification"]
+            == expected_classification
+        )
 
     all_evaluation = evaluate_checkpoint(
         demo_config,
@@ -105,6 +156,8 @@ def test_one_epoch_checkpoint_evaluation_and_sizing(
     assert "fno_selection_neighborhood" in sizing
     assert "field_rmse_K" in sizing["rows"][0]
     assert "critical_max_peak_error_K" in sizing["rows"][0]
+    assert "optimistic_margin_error_K" in sizing["rows"][0]
+    assert sizing["safety_buffer_K"] == 0.0
     assert Path(tmp_path / "sizing" / "sizing_matrix.csv").exists()
     assert Path(tmp_path / "sizing" / "sizing_result.json").exists()
 

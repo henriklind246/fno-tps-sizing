@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 from fno_tps.config import StudyConfig
-from fno_tps.data import CausalTargetDataset, DatasetBundle, create_dataloaders, load_dataset
+from fno_tps.data import DatasetBundle, create_dataloaders, load_dataset
 from fno_tps.physics import TPSFVSolver
 from fno_tps.runtime import load_model_checkpoint, resolve_device
 
@@ -32,8 +32,17 @@ def evaluate_loader(
     config: StudyConfig,
     bundle: DatasetBundle,
     device: str | torch.device = "cpu",
+    *,
+    safety_buffer_K: float = 0.0,
+    near_boundary_limit_K: float = 10.0,
 ) -> dict[str, Any]:
     resolved_device = torch.device(device)
+    safety_buffer_K = float(safety_buffer_K)
+    near_boundary_limit_K = float(near_boundary_limit_K)
+    if not np.isfinite(safety_buffer_K) or safety_buffer_K < 0.0:
+        raise ValueError("safety_buffer_K must be finite and nonnegative.")
+    if not np.isfinite(near_boundary_limit_K) or near_boundary_limit_K < 0.0:
+        raise ValueError("near_boundary_limit_K must be finite and nonnegative.")
     model.eval()
     mean = bundle.normalization["delta_t_mean"]
     std = bundle.normalization["delta_t_std"]
@@ -83,6 +92,11 @@ def evaluate_loader(
     feasibility_disagreement_count = 0
     true_distances_to_limit: list[float] = []
     predicted_distances_to_limit: list[float] = []
+    optimistic_margin_errors: list[float] = []
+    near_boundary_optimistic_margin_errors: list[float] = []
+    buffered_false_feasible_count = 0
+    buffered_false_infeasible_count = 0
+    safety_abstention_count = 0
     t0_max_errors: list[float] = []
     for case_id in sorted(prediction_by_case):
         prediction_delta = prediction_by_case[case_id]
@@ -146,6 +160,40 @@ def evaluate_loader(
         false_feasible_count += int(false_feasible)
         false_infeasible_count += int(false_infeasible)
         feasibility_disagreement_count += int(feasibility_disagreement)
+        true_minimum_margin = min(bond_true_margin, struct_true_margin)
+        predicted_minimum_margin = min(bond_pred_margin, struct_pred_margin)
+        optimistic_margin_error = max(
+            0.0,
+            predicted_minimum_margin - true_minimum_margin,
+        )
+        optimistic_margin_errors.append(optimistic_margin_error)
+        if abs(true_minimum_margin) <= near_boundary_limit_K:
+            near_boundary_optimistic_margin_errors.append(
+                optimistic_margin_error
+            )
+        if predicted_minimum_margin < 0.0:
+            buffered_classification = "surrogate_infeasible"
+        elif (
+            bond_pred_margin > safety_buffer_K
+            and struct_pred_margin > safety_buffer_K
+        ):
+            buffered_classification = "surrogate_feasible"
+        else:
+            buffered_classification = "near_boundary_fv_required"
+        buffered_false_feasible = (
+            buffered_classification == "surrogate_feasible"
+            and not true_feasible
+        )
+        buffered_false_infeasible = (
+            buffered_classification == "surrogate_infeasible"
+            and true_feasible
+        )
+        safety_abstention = (
+            buffered_classification == "near_boundary_fv_required"
+        )
+        buffered_false_feasible_count += int(buffered_false_feasible)
+        buffered_false_infeasible_count += int(buffered_false_infeasible)
+        safety_abstention_count += int(safety_abstention)
         true_distance_to_limit = min(
             abs(bond_true_margin),
             abs(struct_true_margin),
@@ -182,11 +230,9 @@ def evaluate_loader(
             "predicted_bond_margin_K": bond_pred_margin,
             "true_structural_margin_K": struct_true_margin,
             "predicted_structural_margin_K": struct_pred_margin,
-            "true_minimum_margin_K": min(bond_true_margin, struct_true_margin),
-            "predicted_minimum_margin_K": min(
-                bond_pred_margin,
-                struct_pred_margin,
-            ),
+            "true_minimum_margin_K": true_minimum_margin,
+            "predicted_minimum_margin_K": predicted_minimum_margin,
+            "optimistic_margin_error_K": optimistic_margin_error,
             "true_distance_to_limit_K": true_distance_to_limit,
             "predicted_distance_to_limit_K": predicted_distance_to_limit,
             "true_feasible": bool(true_feasible),
@@ -194,6 +240,10 @@ def evaluate_loader(
             "false_feasible": bool(false_feasible),
             "false_infeasible": bool(false_infeasible),
             "feasibility_disagreement": bool(feasibility_disagreement),
+            "buffered_classification": buffered_classification,
+            "buffered_false_feasible": bool(buffered_false_feasible),
+            "buffered_false_infeasible": bool(buffered_false_infeasible),
+            "safety_abstention": bool(safety_abstention),
             "margin_error_K": case_margin_error,
             "margin_sign_disagreement": bool(sign_disagreement),
             "t0_max_abs_delta_T_K": t0_error,
@@ -213,6 +263,10 @@ def evaluate_loader(
 
     critical_mean = 0.5 * (mean_bond + mean_structural)
     margin_error_p95 = percentile(margin_errors, 95.0)
+    optimistic_margin_error_p95 = percentile(
+        optimistic_margin_errors,
+        95.0,
+    )
     return {
         "field_rmse_K": float(np.sqrt(total_squared / max(total_count, 1))),
         "tps_rmse_K": float(np.sqrt(region_squared["tps"] / max(region_count["tps"], 1))),
@@ -233,10 +287,55 @@ def evaluate_loader(
         "margin_error_p90_K": percentile(margin_errors, 90.0),
         "margin_error_p95_K": margin_error_p95,
         "margin_error_max_K": max(margin_errors) if margin_errors else float("nan"),
+        "optimistic_margin_error_mean_K": (
+            float(np.mean(optimistic_margin_errors))
+            if optimistic_margin_errors
+            else float("nan")
+        ),
+        "optimistic_margin_error_p90_K": percentile(
+            optimistic_margin_errors,
+            90.0,
+        ),
+        "optimistic_margin_error_p95_K": optimistic_margin_error_p95,
+        "optimistic_margin_error_p99_K": percentile(
+            optimistic_margin_errors,
+            99.0,
+        ),
+        "optimistic_margin_error_max_K": (
+            max(optimistic_margin_errors)
+            if optimistic_margin_errors
+            else float("nan")
+        ),
+        "near_boundary_limit_K": near_boundary_limit_K,
+        "near_boundary_case_count": len(
+            near_boundary_optimistic_margin_errors
+        ),
+        "near_boundary_optimistic_margin_error_mean_K": (
+            float(np.mean(near_boundary_optimistic_margin_errors))
+            if near_boundary_optimistic_margin_errors
+            else float("nan")
+        ),
+        "near_boundary_optimistic_margin_error_p95_K": percentile(
+            near_boundary_optimistic_margin_errors,
+            95.0,
+        ),
+        "near_boundary_optimistic_margin_error_p99_K": percentile(
+            near_boundary_optimistic_margin_errors,
+            99.0,
+        ),
+        "near_boundary_optimistic_margin_error_max_K": (
+            max(near_boundary_optimistic_margin_errors)
+            if near_boundary_optimistic_margin_errors
+            else float("nan")
+        ),
         "margin_sign_disagreements": margin_sign_disagreements,
         "false_feasible_count": false_feasible_count,
         "false_infeasible_count": false_infeasible_count,
         "feasibility_disagreement_count": feasibility_disagreement_count,
+        "safety_buffer_K": safety_buffer_K,
+        "buffered_false_feasible_count": buffered_false_feasible_count,
+        "buffered_false_infeasible_count": buffered_false_infeasible_count,
+        "safety_abstention_count": safety_abstention_count,
         "true_distance_to_limit_mean_K": (
             float(np.mean(true_distances_to_limit))
             if true_distances_to_limit
@@ -257,7 +356,9 @@ def evaluate_loader(
             if predicted_distances_to_limit
             else float("nan")
         ),
-        "checkpoint_selection_score_K": critical_mean + margin_error_p95,
+        "checkpoint_selection_score_K": (
+            critical_mean + optimistic_margin_error_p95
+        ),
         "t0_max_abs_delta_T_K": max(t0_max_errors) if t0_max_errors else float("nan"),
         "case_count": len(records),
         "records": records,
@@ -272,7 +373,17 @@ def evaluate_checkpoint(
     *,
     split: str = "test",
     device: str = "auto",
+    safety_buffer_K: float | None = None,
+    calibration_split: str | None = None,
+    calibration_quantile: float = 99.0,
+    near_boundary_limit_K: float = 10.0,
 ) -> dict[str, Any]:
+    if safety_buffer_K is not None and calibration_split is not None:
+        raise ValueError(
+            "Pass either safety_buffer_K or calibration_split, not both."
+        )
+    if not 0.0 <= calibration_quantile <= 100.0:
+        raise ValueError("calibration_quantile must lie in [0, 100].")
     bundle = load_dataset(data_dir)
     model, checkpoint = load_model_checkpoint(checkpoint_path, resolve_device(device))
     if bundle.manifest["study_config_sha256"] != config.sha256:
@@ -286,32 +397,96 @@ def evaluate_checkpoint(
         key: float(value)
         for key, value in checkpoint["normalization"].items()
     }
-    splits = dict(bundle.splits)
-    if split == "all":
-        splits["test"] = np.arange(len(bundle.cases), dtype=np.int64)
-        loader_name = "test"
-    elif split in ("train", "val", "test"):
-        loader_name = split
-    else:
+    if split not in ("train", "val", "test", "all"):
         raise ValueError(f"Unknown evaluation split {split!r}.")
     evaluation_bundle = replace(
         bundle,
-        splits=splits,
         normalization=evaluation_normalization,
     )
     representation = model.config.representation
     loaders = create_dataloaders(config, evaluation_bundle, representation)
-    loader = {
+    loader_by_split = {
         "train": loaders[0],
         "val": loaders[1],
         "test": loaders[2],
-    }[loader_name]
+    }
+    if split in ("train", "all"):
+        target_splits = dict(evaluation_bundle.splits)
+        target_splits["test"] = (
+            np.asarray(evaluation_bundle.splits["train"], dtype=np.int64)
+            if split == "train"
+            else np.arange(len(bundle.cases), dtype=np.int64)
+        )
+        target_bundle = replace(
+            evaluation_bundle,
+            splits=target_splits,
+        )
+        loader = create_dataloaders(
+            config,
+            target_bundle,
+            representation,
+        )[2]
+    else:
+        loader = loader_by_split[split]
+    calibration: dict[str, Any] | None = None
+    if calibration_split is not None:
+        if calibration_split not in ("val", "test"):
+            raise ValueError(
+                "calibration_split must be val or test so every saved time "
+                "is evaluated."
+            )
+        calibration_report = evaluate_loader(
+            model,
+            loader_by_split[calibration_split],
+            config,
+            evaluation_bundle,
+            next(model.parameters()).device,
+            near_boundary_limit_K=near_boundary_limit_K,
+        )
+        calibration_errors = [
+            float(record["optimistic_margin_error_K"])
+            for record in calibration_report["records"]
+        ]
+        if not calibration_errors:
+            raise ValueError(
+                f"Calibration split {calibration_split!r} contains no cases."
+            )
+        applied_safety_buffer_K = float(
+            np.percentile(calibration_errors, calibration_quantile)
+        )
+        calibration = {
+            "split": calibration_split,
+            "quantile": float(calibration_quantile),
+            "case_count": len(calibration_errors),
+            "safety_buffer_K": applied_safety_buffer_K,
+            "optimistic_margin_error_mean_K": calibration_report[
+                "optimistic_margin_error_mean_K"
+            ],
+            "optimistic_margin_error_p95_K": calibration_report[
+                "optimistic_margin_error_p95_K"
+            ],
+            "optimistic_margin_error_p99_K": calibration_report[
+                "optimistic_margin_error_p99_K"
+            ],
+            "optimistic_margin_error_max_K": calibration_report[
+                "optimistic_margin_error_max_K"
+            ],
+            "overlaps_evaluation_split": (
+                split == calibration_split or split == "all"
+            ),
+        }
+    else:
+        applied_safety_buffer_K = (
+            0.0 if safety_buffer_K is None else float(safety_buffer_K)
+        )
     report = evaluate_loader(
         model,
         loader,
         config,
         evaluation_bundle,
         next(model.parameters()).device,
+        safety_buffer_K=applied_safety_buffer_K,
+        near_boundary_limit_K=near_boundary_limit_K,
     )
     report.update({
         "split": split,
@@ -322,6 +497,16 @@ def evaluate_checkpoint(
         "checkpoint_normalization": evaluation_normalization,
         "dataset_normalization": dataset_normalization,
         "dataset_validity": bundle.manifest["validity"],
+        "safety_buffer_source": (
+            "calibration_split"
+            if calibration is not None
+            else (
+                "explicit"
+                if safety_buffer_K is not None
+                else "unbuffered_zero"
+            )
+        ),
+        "safety_calibration": calibration,
     })
     if output_path is not None:
         destination = Path(output_path)

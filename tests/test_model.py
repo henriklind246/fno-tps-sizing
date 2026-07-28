@@ -14,7 +14,8 @@ def test_representation_shapes_and_gradients(demo_config):
     ):
         model = build_model(demo_config, representation)
         spatial = torch.randn(2, demo_config.mesh.nx, demo_config.mesh.ny, channels)
-        conditioning = torch.randn(2, 2)
+        conditioning = torch.rand(2, 2)
+        conditioning[:, 1] = 1.0
         forcing = (
             None
             if representation == "summary"
@@ -24,6 +25,52 @@ def test_representation_shapes_and_gradients(demo_config):
         assert output.shape == (2, demo_config.mesh.nx, demo_config.mesh.ny, 1)
         output.square().mean().backward()
         assert all(parameter.grad is not None for parameter in model.parameters())
+
+
+def test_hard_initial_condition_uses_affine_normalized_zero(demo_config):
+    normalization = {"delta_t_mean": 50.0, "delta_t_std": 25.0}
+    model = build_model(
+        demo_config,
+        "summary",
+        normalization,
+    ).eval()
+    spatial = torch.randn(
+        2,
+        demo_config.mesh.nx,
+        demo_config.mesh.ny,
+        model.spatial_channels,
+    )
+    conditioning = torch.tensor([[0.2, 0.0], [0.8, 0.0]])
+    prediction = model(spatial, conditioning)
+    expected = torch.full_like(prediction, -2.0)
+    torch.testing.assert_close(prediction, expected, rtol=0.0, atol=0.0)
+    physical_delta = prediction * normalization["delta_t_std"] + normalization[
+        "delta_t_mean"
+    ]
+    torch.testing.assert_close(
+        physical_delta,
+        torch.zeros_like(physical_delta),
+        rtol=0.0,
+        atol=0.0,
+    )
+
+
+def test_hard_initial_condition_gate_saturates_at_first_saved_time(demo_config):
+    model = build_model(demo_config, "summary").eval()
+    raw = torch.tensor([[[[4.0]]], [[[4.0]]], [[[4.0]]]])
+    tau_gate = model.config.initial_condition_gate_tau
+    conditioning = torch.tensor([
+        [0.0, 0.0],
+        [0.0, 0.5 * tau_gate],
+        [0.0, tau_gate],
+    ])
+    gated = model.enforce_initial_condition(raw, conditioning)
+    torch.testing.assert_close(gated[0], torch.zeros_like(gated[0]))
+    torch.testing.assert_close(
+        gated[1],
+        torch.full_like(gated[1], 4.0 * 2.0**-0.5),
+    )
+    torch.testing.assert_close(gated[2], raw[2])
 
 
 def test_global_and_local_have_matched_capacity(demo_config):

@@ -160,6 +160,50 @@ versions, hashes, pressure basis, temperature ranges, emissivity assumptions,
 acceptance diagnostics, and the data-generation Git revision and working-tree
 state.
 
+Newly trained models enforce the fixed initial condition architecturally. If
+`z0` is the affine-normalized value corresponding to zero temperature rise,
+the returned field is
+
+\[
+\widehat z=z_0+\sin\left(\frac{\pi}{2}
+\min\left(\frac{\tau}{\tau_g},1\right)\right)
+\,(z_{\mathrm{raw}}-z_0),
+\]
+
+where `tau_g` is the first positive saved time divided by the final time. Thus
+the physical temperature rise is exactly zero at `t=0`, and the gate is one at
+every positive saved target. Training samples only positive times; validation
+continues to evaluate `t=0` as an assertion. Checkpoints created before this
+change remain loadable and retain their original forward behavior.
+
+Training saves a full-precision, model-only checkpoint for every evaluated
+epoch under `RUN_DIR/checkpoints/`; `fno_best.pt` and `fno_latest.pt` separately
+retain optimizer, scheduler, and random-number state for resumption. This keeps
+the epoch archive materially smaller. Early stopping uses only continuous
+validation progress in field RMSE, critical-peak error, and optimistic-margin
+P95. `final_metrics.json` records the non-dominated frontier plus candidates
+for lowest field error, lowest critical peak error, lowest optimistic-margin
+tail, best continuous composite, and the latest epoch. Feasibility sign counts
+remain diagnostics and do not stop training.
+
+Evaluation reports the continuous optimistic safety error
+`max(0, predicted_minimum_margin - true_minimum_margin)` at mean, P90, P95,
+P99, and maximum, including a near-boundary cohort. A safety buffer can be
+provided directly or estimated from a dedicated calibration split:
+
+```bash
+fno-tps evaluate --config conf/nonlinear-production-36x48.yaml \
+  --data data/production-36x48 \
+  --checkpoint runs/temporal_local/fno_best.pt \
+  --calibration-split val --calibration-quantile 99 \
+  --output reports/evaluation.json
+```
+
+Pass the calibrated value to sizing with `--safety-buffer-k`. A case is
+surrogate-feasible only when both predicted constraint margins strictly exceed
+the buffer. Nonnegative margins inside the buffer are labeled
+`near_boundary_fv_required`, rather than feasible or infeasible.
+
 ## MSI batch workflow
 
 The MSI scripts default to the checked 36×48 production configuration. Set up

@@ -207,8 +207,12 @@ def run_full_sizing(
     allow_demo: bool = False,
     device: str = "auto",
     batch_size: int = 64,
+    safety_buffer_K: float = 0.0,
 ) -> dict[str, Any]:
     config.require_authoritative(allow_demo=allow_demo)
+    safety_buffer_K = float(safety_buffer_K)
+    if not np.isfinite(safety_buffer_K) or safety_buffer_K < 0.0:
+        raise ValueError("safety_buffer_K must be finite and nonnegative.")
     scenario_set_id, scenario_authoritative, scenarios, scenario_hash = load_scenarios(
         scenario_path
     )
@@ -289,9 +293,23 @@ def run_full_sizing(
                 config.structural_temperature_limit
                 - fv_qoi["structural_interface_max"]
             )
-            surrogate_design_satisfied = (
+            surrogate_raw_feasible = (
                 predicted_bond_margin >= 0.0 and predicted_structural_margin >= 0.0
             )
+            if min(
+                predicted_bond_margin,
+                predicted_structural_margin,
+            ) < 0.0:
+                buffered_design_classification = "infeasible"
+            elif (
+                predicted_bond_margin > safety_buffer_K
+                and predicted_structural_margin > safety_buffer_K
+            ):
+                buffered_design_classification = "feasible"
+            else:
+                buffered_design_classification = (
+                    "near_boundary_fv_required"
+                )
             surrogate_valid = bool(
                 surrogate_hot_face_max
                 <= config.hot_face_temperature_limit + 1.0e-8
@@ -299,7 +317,8 @@ def run_full_sizing(
                 > config.validity.minimum_physical_temperature
             )
             surrogate_feasible = (
-                surrogate_valid and surrogate_design_satisfied
+                surrogate_valid
+                and buffered_design_classification == "feasible"
             )
             fv_feasible = bool(fv_acceptance.feasible)
             bond_peak_error = abs(
@@ -326,11 +345,7 @@ def run_full_sizing(
                 "surrogate_classification": (
                     "invalid"
                     if not surrogate_valid
-                    else (
-                        "feasible"
-                        if surrogate_design_satisfied
-                        else "infeasible"
-                    )
+                    else buffered_design_classification
                 ),
                 "surrogate_bond_max": predicted_qoi["bond_max"],
                 "fv_bond_max": fv_qoi["bond_max"],
@@ -363,6 +378,22 @@ def run_full_sizing(
                 "fv_bond_margin": fv_bond_margin,
                 "surrogate_structural_margin": predicted_structural_margin,
                 "fv_structural_margin": fv_structural_margin,
+                "surrogate_minimum_margin": min(
+                    predicted_bond_margin,
+                    predicted_structural_margin,
+                ),
+                "fv_minimum_margin": min(
+                    fv_bond_margin,
+                    fv_structural_margin,
+                ),
+                "optimistic_margin_error_K": max(
+                    0.0,
+                    min(
+                        predicted_bond_margin,
+                        predicted_structural_margin,
+                    )
+                    - min(fv_bond_margin, fv_structural_margin),
+                ),
                 "surrogate_criticality_ratio": max(
                     predicted_qoi["bond_max"] / config.bond_temperature_limit,
                     predicted_qoi["structural_interface_max"]
@@ -377,8 +408,16 @@ def run_full_sizing(
                     abs(predicted_bond_margin - fv_bond_margin),
                     abs(predicted_structural_margin - fv_structural_margin),
                 ),
-                "margin_sign_disagreement": surrogate_feasible != fv_feasible,
+                "margin_sign_disagreement": (
+                    surrogate_raw_feasible != fv_feasible
+                ),
+                "surrogate_raw_feasible": surrogate_raw_feasible,
                 "surrogate_feasible": surrogate_feasible,
+                "safety_abstention": (
+                    surrogate_valid
+                    and buffered_design_classification
+                    == "near_boundary_fv_required"
+                ),
                 "fv_feasible": fv_feasible,
                 "fv_relative_energy_residual": (
                     fv_acceptance.relative_energy_residual
@@ -392,8 +431,16 @@ def run_full_sizing(
                 "fv_property_query_max_temperature_K": (
                     trajectory.property_query_temperature_range[1]
                 ),
-                "false_feasible": surrogate_feasible and not fv_feasible,
-                "false_infeasible": not surrogate_feasible and fv_feasible,
+                "false_feasible": (
+                    surrogate_valid
+                    and buffered_design_classification == "feasible"
+                    and not fv_feasible
+                ),
+                "false_infeasible": (
+                    surrogate_valid
+                    and buffered_design_classification == "infeasible"
+                    and fv_feasible
+                ),
                 "fv_seconds": fv_seconds,
                 "surrogate_seconds": surrogate_seconds,
             }
@@ -453,6 +500,12 @@ def run_full_sizing(
         "representation": model.config.representation,
         "checkpoint": str(Path(checkpoint_path).resolve()),
         "transfer_source_revision": checkpoint["transfer_source_revision"],
+        "safety_buffer_K": safety_buffer_K,
+        "safety_policy": (
+            "feasible only when both predicted margins are strictly greater "
+            "than safety_buffer_K; nonnegative margins at or below the buffer "
+            "require finite-volume verification"
+        ),
         "fno_selected_thickness": fno_selected,
         "fv_selected_thickness": fv_selected,
         "absolute_thickness_error": absolute_error,
@@ -478,6 +531,9 @@ def run_full_sizing(
         ),
         "false_feasible_count": sum(int(row["false_feasible"]) for row in rows),
         "false_infeasible_count": sum(int(row["false_infeasible"]) for row in rows),
+        "safety_abstention_count": sum(
+            int(row["safety_abstention"]) for row in rows
+        ),
         "margin_sign_disagreement_count": sum(
             int(row["margin_sign_disagreement"]) for row in rows
         ),
@@ -489,6 +545,24 @@ def run_full_sizing(
         ),
         "margin_error_mean_K": float(
             np.mean([row["margin_error_K"] for row in rows])
+        ),
+        "optimistic_margin_error_mean_K": float(
+            np.mean([row["optimistic_margin_error_K"] for row in rows])
+        ),
+        "optimistic_margin_error_p95_K": float(
+            np.percentile(
+                [row["optimistic_margin_error_K"] for row in rows],
+                95.0,
+            )
+        ),
+        "optimistic_margin_error_p99_K": float(
+            np.percentile(
+                [row["optimistic_margin_error_K"] for row in rows],
+                99.0,
+            )
+        ),
+        "optimistic_margin_error_max_K": float(
+            np.max([row["optimistic_margin_error_K"] for row in rows])
         ),
         "field_rmse_mean_K": float(
             np.mean([row["field_rmse_K"] for row in rows])

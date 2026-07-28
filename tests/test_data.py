@@ -47,8 +47,8 @@ def test_dataset_contracts_and_simulation_splits(
     ):
         train = CausalTargetDataset(demo_config, bundle, "train", representation)
         val = CausalTargetDataset(demo_config, bundle, "val", representation)
-        assert len(train.samples) == len(train.case_ids) * (
-            demo_config.training.targets_per_case + 1
+        assert len(train.samples) == (
+            len(train.case_ids) * demo_config.training.targets_per_case
         )
         for case_id in train.case_ids:
             target_indices = [
@@ -56,12 +56,7 @@ def test_dataset_contracts_and_simulation_splits(
                 for sample_case_id, target_index in train.samples
                 if sample_case_id == int(case_id)
             ]
-            assert target_indices.count(0) == 1
-            assert all(
-                target_index > 0
-                for target_index in target_indices
-                if target_index != 0
-            )
+            assert all(target_index > 0 for target_index in target_indices)
         assert any(target_index == 0 for _, target_index in val.samples)
         item = train[0]
         assert item["spatial"].shape[-1] == channels

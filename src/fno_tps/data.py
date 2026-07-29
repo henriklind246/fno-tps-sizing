@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from fno_tps.acceptance import assess_trajectory
-from fno_tps.config import StudyConfig
+from fno_tps.config import StudyConfig, dataset_compatibility_sha256
 from fno_tps.model import TRANSFER_SOURCE_REVISION
 from fno_tps.physics import TPSFVSolver
 from fno_tps.problem import SimulationCase, TPSProblem
@@ -96,12 +96,23 @@ def generate_dataset(
     output_dir: str | Path,
     *,
     cases: list[SimulationCase] | None = None,
+    case_alternatives: list[list[SimulationCase]] | None = None,
     cases_per_stratum: int | None = None,
     max_cases: int | None = None,
 ) -> DatasetBundle:
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
     problem = TPSProblem(config)
+    if cases is not None and case_alternatives is not None:
+        raise ValueError("Pass cases or case_alternatives, not both.")
+    if case_alternatives is not None:
+        if not case_alternatives or any(
+            not alternatives for alternatives in case_alternatives
+        ):
+            raise ValueError(
+                "case_alternatives requires at least one candidate per slot."
+            )
+        cases = [alternatives[0] for alternatives in case_alternatives]
     auto_generated = cases is None
     candidate_cases = (
         problem.sample_cases(cases_per_stratum, max_cases)
@@ -153,6 +164,15 @@ def generate_dataset(
                 rejected_by_stratum.get(stratum, 0) + 1
             )
             attempts += 1
+            if case_alternatives is not None:
+                alternatives = case_alternatives[index]
+                if attempts >= len(alternatives):
+                    raise ValueError(
+                        f"Every calibration alternative for slot {index} "
+                        "is invalid; expand the screened candidate pool."
+                    )
+                case = alternatives[attempts]
+                continue
             if not auto_generated:
                 raise ValueError(
                     f"Case {case.case_id!r} is invalid: "
@@ -246,6 +266,9 @@ def generate_dataset(
         "code_provenance": capture_git_state(),
         "study_config": study_payload,
         "study_config_sha256": config.sha256,
+        "dataset_compatibility_sha256": (
+            config.dataset_compatibility_sha256
+        ),
         "transfer_source_revision": TRANSFER_SOURCE_REVISION,
         "case_count": len(generated_cases),
         "shapes": {
@@ -412,6 +435,21 @@ def load_dataset(path: str | Path) -> DatasetBundle:
         },
         manifest=manifest,
     )
+
+
+def dataset_matches_config(
+    bundle: DatasetBundle,
+    config: StudyConfig,
+) -> bool:
+    """Accept exact configs or legacy datasets that differ only in training."""
+    if bundle.manifest["study_config_sha256"] == config.sha256:
+        return True
+    recorded = bundle.manifest.get("dataset_compatibility_sha256")
+    if recorded is None and "study_config" in bundle.manifest:
+        recorded = dataset_compatibility_sha256(
+            bundle.manifest["study_config"]
+        )
+    return recorded == config.dataset_compatibility_sha256
 
 
 class TPSInputBuilder:
@@ -657,6 +695,10 @@ class CausalTargetDataset(Dataset):
         tensors = {key: torch.from_numpy(value) for key, value in item.items()}
         tensors["case_index"] = torch.tensor(case_id, dtype=torch.int64)
         tensors["target_index"] = torch.tensor(target_index, dtype=torch.int64)
+        tensors["tps_thickness_m"] = torch.tensor(
+            case.d_tps,
+            dtype=torch.float32,
+        )
         return tensors
 
 

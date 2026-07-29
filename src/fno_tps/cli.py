@@ -4,6 +4,11 @@ import argparse
 from pathlib import Path
 import json
 
+from fno_tps.calibration import (
+    DEFAULT_CALIBRATION_SEED,
+    evaluate_calibration_checkpoints,
+    generate_boundary_calibration_dataset,
+)
 from fno_tps.config import load_study_config
 from fno_tps.data import generate_dataset
 from fno_tps.evaluation import evaluate_checkpoint
@@ -178,6 +183,103 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--cases-per-stratum", type=int, default=None)
     generate.add_argument("--max-cases", type=int, default=None)
     generate.add_argument("--allow-demo", action="store_true")
+
+    generate_calibration = subparsers.add_parser(
+        "generate-calibration",
+        help=(
+            "Generate a dedicated near-limit, thickness-stratified "
+            "checkpoint-calibration dataset."
+        ),
+    )
+    _common(generate_calibration)
+    generate_calibration.add_argument("--output", type=Path, required=True)
+    generate_calibration.add_argument(
+        "--screening-checkpoint",
+        type=Path,
+        required=True,
+        help="Checkpoint used only to screen new cases before FV verification.",
+    )
+    generate_calibration.add_argument(
+        "--exclude-data",
+        type=Path,
+        action="append",
+        default=[],
+        help=(
+            "Repeat for every training, validation, calibration, or evaluation "
+            "dataset whose case fingerprints must be excluded."
+        ),
+    )
+    generate_calibration.add_argument(
+        "--cases-per-thickness",
+        type=int,
+        default=5,
+    )
+    generate_calibration.add_argument(
+        "--candidate-pool-per-thickness",
+        type=int,
+        default=72,
+    )
+    generate_calibration.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_CALIBRATION_SEED,
+    )
+    generate_calibration.add_argument("--device", default="auto")
+    generate_calibration.add_argument("--batch-size", type=int, default=64)
+    generate_calibration.add_argument(
+        "--screening-time-count",
+        type=int,
+        default=25,
+    )
+    generate_calibration.add_argument(
+        "--boundary-band-k",
+        type=float,
+        default=10.0,
+    )
+    generate_calibration.add_argument(
+        "--hot-face-guard-k",
+        type=float,
+        default=20.0,
+    )
+
+    calibrate_checkpoints = subparsers.add_parser(
+        "calibrate-checkpoints",
+        help=(
+            "Select archived checkpoints with the zero-false-feasible "
+            "constraint and freeze a safety buffer/abstention policy."
+        ),
+    )
+    _common(calibrate_checkpoints)
+    calibrate_checkpoints.add_argument("--data", type=Path, required=True)
+    calibrate_checkpoints.add_argument("--output", type=Path, required=True)
+    calibrate_checkpoints.add_argument(
+        "--checkpoint",
+        type=Path,
+        action="append",
+        required=True,
+        help="Repeat for every archived checkpoint candidate.",
+    )
+    calibrate_checkpoints.add_argument(
+        "--expected-epochs",
+        type=int,
+        nargs="*",
+        default=[],
+        help=(
+            "Expected candidate epochs. Missing epochs make the frozen policy "
+            "explicitly provisional."
+        ),
+    )
+    calibrate_checkpoints.add_argument("--device", default="auto")
+    calibrate_checkpoints.add_argument(
+        "--safety-buffer-quantile",
+        type=float,
+        default=100.0,
+    )
+    calibrate_checkpoints.add_argument(
+        "--near-boundary-limit-k",
+        type=float,
+        default=10.0,
+    )
 
     train = subparsers.add_parser("train", help="Train one representation.")
     _common(train)
@@ -364,6 +466,36 @@ def main(argv: list[str] | None = None) -> int:
             "shape": list(bundle.trajectories.shape),
             "validity": bundle.manifest["validity"],
         }
+    elif args.command == "generate-calibration":
+        config.require_authoritative()
+        report = generate_boundary_calibration_dataset(
+            config,
+            args.output,
+            args.screening_checkpoint,
+            cases_per_thickness=args.cases_per_thickness,
+            candidate_pool_per_thickness=(
+                args.candidate_pool_per_thickness
+            ),
+            seed=args.seed,
+            excluded_data_dirs=args.exclude_data,
+            device=args.device,
+            batch_size=args.batch_size,
+            screening_time_count=args.screening_time_count,
+            boundary_band_K=args.boundary_band_k,
+            hot_face_guard_K=args.hot_face_guard_k,
+        )
+    elif args.command == "calibrate-checkpoints":
+        config.require_authoritative()
+        report = evaluate_calibration_checkpoints(
+            config,
+            args.data,
+            args.checkpoint,
+            args.output,
+            expected_epochs=args.expected_epochs,
+            device=args.device,
+            safety_buffer_quantile=args.safety_buffer_quantile,
+            near_boundary_limit_K=args.near_boundary_limit_k,
+        )
     elif args.command == "train":
         report = train_model(
             config,

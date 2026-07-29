@@ -98,3 +98,4 @@ training:
   dropout: 0.0
   bond_loss_weight: 0.0
   interface_loss_weight: 0.0
+  thickness_loss_weight_power: 0.0

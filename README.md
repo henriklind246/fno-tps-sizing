@@ -176,15 +176,31 @@ every positive saved target. Training samples only positive times; validation
 continues to evaluate `t=0` as an assertion. Checkpoints created before this
 change remain loadable and retain their original forward behavior.
 
+Training can upweight thin TPS cases with
+`training.thickness_loss_weight_power`. For thickness \(d\), the per-case
+weight is proportional to \(d^{-p}\), where \(p\) is the configured power, and
+is normalized to mean one across the configured thickness candidates. A power
+of zero disables weighting. The production configuration uses \(p=0.5\), which
+gives the 3 mm stratum 2.83 times the weight of the 24 mm stratum while keeping
+the average loss scale unchanged. The same case weight multiplies the combined
+field and auxiliary training losses; validation and checkpoint selection remain
+unweighted so candidate comparisons still describe the real calibration
+distribution. `final_metrics.json` records the exact per-thickness weights, and
+`train_metrics.csv` records the realized minimum, mean, and maximum each epoch.
+Training-only configuration changes reuse an existing FV dataset through a
+separate data-compatibility hash; physics, mesh, forcing, material, and solver
+changes still fail compatibility checks.
+
 Training saves a full-precision, model-only checkpoint for every evaluated
 epoch under `RUN_DIR/checkpoints/`; `fno_best.pt` and `fno_latest.pt` separately
 retain optimizer, scheduler, and random-number state for resumption. This keeps
 the epoch archive materially smaller. Early stopping uses only continuous
-validation progress in field RMSE, critical-peak error, and optimistic-margin
-P95. `final_metrics.json` records the non-dominated frontier plus candidates
-for lowest field error, lowest critical peak error, lowest optimistic-margin
-tail, best continuous composite, and the latest epoch. Feasibility sign counts
-remain diagnostics and do not stop training.
+validation progress in field RMSE, critical-peak error, and two-sided absolute
+margin-error P95. `final_metrics.json` records the non-dominated frontier plus
+candidates for lowest field error, lowest critical peak error, lowest absolute
+margin tail, best continuous composite, and the latest epoch. Feasibility sign
+counts remain diagnostics during training and become hard constraints only in
+the separate post-training calibration selector.
 
 Evaluation reports the continuous optimistic safety error
 `max(0, predicted_minimum_margin - true_minimum_margin)` at mean, P90, P95,
@@ -203,6 +219,48 @@ Pass the calibrated value to sizing with `--safety-buffer-k`. A case is
 surrogate-feasible only when both predicted constraint margins strictly exceed
 the buffer. Nonnegative margins inside the buffer are labeled
 `near_boundary_fv_required`, rather than feasible or infeasible.
+
+For promotion decisions, generate a separate calibration cohort rather than
+reusing the training validation split or the fixed final test. The generator
+creates new in-domain cases, excludes exact case fingerprints from every
+provided dataset, balances the cohort across TPS thicknesses, actively screens
+for both safety limits, and verifies the retained cases with the nonlinear FV
+solver:
+
+```bash
+fno-tps generate-calibration \
+  --config conf/nonlinear-production-36x48.yaml \
+  --output data/calibration-production-36x48 \
+  --screening-checkpoint runs/temporal_local/fno_best.pt \
+  --exclude-data data/production-36x48 \
+  --exclude-data data/evaluation-50-production-36x48
+```
+
+Evaluate every retained archive candidate on that one frozen cohort. The
+deployment selector is lexicographic: checkpoints with zero calibration
+false-feasible events come first, followed by absolute margin-error P95,
+critical-peak error, field RMSE, and epoch. Optimistic P95 remains reported but
+cannot win a role by itself. The default 100th-percentile one-sided optimistic
+error becomes the frozen safety buffer, and predictions between zero and that
+buffer are routed to FV:
+
+```bash
+fno-tps calibrate-checkpoints \
+  --config conf/nonlinear-production-36x48.yaml \
+  --data data/calibration-production-36x48 \
+  --output reports/checkpoint-calibration \
+  --checkpoint runs/temporal_local/checkpoints/epoch_0061.pt \
+  --checkpoint runs/temporal_local/checkpoints/epoch_0065.pt \
+  --checkpoint runs/temporal_local/checkpoints/epoch_0074.pt \
+  --checkpoint runs/temporal_local/checkpoints/epoch_0098.pt \
+  --checkpoint runs/temporal_local/checkpoints/epoch_0099.pt \
+  --expected-epochs 61 65 74 98 99
+```
+
+`safety_policy.json` records checkpoint and dataset hashes, thresholds, the
+abstention interval, calibration outcomes, and whether missing expected
+checkpoint files make the result provisional. Do not tune that policy on the
+subsequent untouched final test.
 
 ## MSI batch workflow
 

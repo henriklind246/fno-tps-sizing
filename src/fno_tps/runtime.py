@@ -16,7 +16,11 @@ from fno_tps.model import FNOConfig, TPSFNO, TRANSFER_SOURCE_REVISION
 
 def resolve_device(requested: str = "auto") -> torch.device:
     if requested == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
     return torch.device(requested)
 
 

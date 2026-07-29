@@ -5,7 +5,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from fno_tps.config import load_study_config
+from fno_tps.config import TrainingConfig, load_study_config
 from fno_tps.problem import BondDefect, SimulationCase, TPSProblem
 
 
@@ -139,13 +139,45 @@ def test_resolved_config_capture_is_round_trip_loadable():
     assert resolved.sha256 == config.sha256
 
 
+def test_dataset_compatibility_hash_excludes_training_controls():
+    config = load_study_config("conf/demo.yaml")
+    changed_training = replace(
+        config,
+        training=replace(
+            config.training,
+            thickness_loss_weight_power=0.5,
+        ),
+    )
+    assert changed_training.sha256 != config.sha256
+    assert (
+        changed_training.dataset_compatibility_sha256
+        == config.dataset_compatibility_sha256
+    )
+    assert (
+        changed_training.inference_compatibility_sha256
+        == config.inference_compatibility_sha256
+    )
+
+
+def test_thickness_loss_weight_power_must_be_nonnegative():
+    with pytest.raises(ValueError, match="thickness_loss_weight_power"):
+        TrainingConfig.from_dict(
+            {"thickness_loss_weight_power": -0.1},
+        )
+
+
 def test_dotted_override_is_validated():
     config = load_study_config(
         "conf/demo.yaml",
-        ["training.epochs=2", "training.width=16"],
+        [
+            "training.epochs=2",
+            "training.width=16",
+            "training.thickness_loss_weight_power=0.5",
+        ],
     )
     assert config.training.epochs == 2
     assert config.training.width == 16
+    assert config.training.thickness_loss_weight_power == pytest.approx(0.5)
     with pytest.raises(KeyError):
         load_study_config("conf/demo.yaml", ["training.unknown=1"])
 

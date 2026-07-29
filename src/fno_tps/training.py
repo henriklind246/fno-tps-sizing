@@ -13,7 +13,11 @@ import torch
 import torch.nn.functional as F
 
 from fno_tps.config import StudyConfig
-from fno_tps.data import create_dataloaders, load_dataset
+from fno_tps.data import (
+    create_dataloaders,
+    dataset_matches_config,
+    load_dataset,
+)
 from fno_tps.evaluation import evaluate_loader
 from fno_tps.model import Representation, build_model
 from fno_tps.runtime import (
@@ -31,6 +35,7 @@ def _training_loss(
     target: torch.Tensor,
     spatial: torch.Tensor,
     config: StudyConfig,
+    sample_weights: torch.Tensor | None = None,
 ) -> torch.Tensor:
     if (
         (config.training.bond_loss_weight or config.training.interface_loss_weight)
@@ -40,20 +45,115 @@ def _training_loss(
             "Bond/interface auxiliary losses require constant-property bond "
             "and backing regions."
         )
-    loss = F.mse_loss(prediction, target)
+    reduction_dims = tuple(range(1, prediction.ndim))
+    per_sample_loss = F.mse_loss(
+        prediction,
+        target,
+        reduction="none",
+    ).mean(dim=reduction_dims)
     tps_end = config.mesh.nx_tps
     bond_end = tps_end + config.mesh.nx_bond
     if config.training.bond_loss_weight:
-        loss = loss + config.training.bond_loss_weight * F.mse_loss(
+        bond_loss = F.mse_loss(
             prediction[:, tps_end:bond_end],
             target[:, tps_end:bond_end],
+            reduction="none",
+        ).mean(dim=reduction_dims)
+        per_sample_loss = (
+            per_sample_loss
+            + config.training.bond_loss_weight * bond_loss
         )
     if config.training.interface_loss_weight:
-        loss = loss + config.training.interface_loss_weight * F.mse_loss(
-            _structural_interface_trace(prediction, spatial, config),
-            _structural_interface_trace(target, spatial, config),
+        interface_prediction = _structural_interface_trace(
+            prediction,
+            spatial,
+            config,
         )
-    return loss
+        interface_target = _structural_interface_trace(
+            target,
+            spatial,
+            config,
+        )
+        interface_dims = tuple(range(1, interface_prediction.ndim))
+        interface_loss = F.mse_loss(
+            interface_prediction,
+            interface_target,
+            reduction="none",
+        ).mean(dim=interface_dims)
+        per_sample_loss = (
+            per_sample_loss
+            + config.training.interface_loss_weight * interface_loss
+        )
+    if sample_weights is None:
+        return per_sample_loss.mean()
+    weights = sample_weights.to(
+        device=per_sample_loss.device,
+        dtype=per_sample_loss.dtype,
+    ).reshape(-1)
+    if weights.shape != per_sample_loss.shape:
+        raise ValueError(
+            "sample_weights must contain one value per batch item."
+        )
+    if not torch.isfinite(weights).all() or torch.any(weights <= 0.0):
+        raise ValueError("sample_weights must be finite and positive.")
+    # The thickness weights are normalized globally to mean one. Do not divide
+    # by the current batch's weight sum: that would erase the intended
+    # upweighting whenever a batch contains a single thickness stratum.
+    return (per_sample_loss * weights).mean()
+
+
+def _thickness_loss_weights(
+    thickness_m: torch.Tensor,
+    config: StudyConfig,
+) -> torch.Tensor:
+    """Return inverse-thickness weights with candidate-set mean equal to one."""
+    power = config.training.thickness_loss_weight_power
+    if power == 0.0:
+        return torch.ones_like(thickness_m)
+    candidates = torch.as_tensor(
+        config.thickness_candidates,
+        device=thickness_m.device,
+        dtype=thickness_m.dtype,
+    )
+    reference = candidates.max()
+    normalization = torch.mean((reference / candidates).pow(power))
+    return (reference / thickness_m).pow(power) / normalization
+
+
+def _thickness_loss_weighting_report(
+    config: StudyConfig,
+) -> dict[str, Any]:
+    thicknesses = torch.tensor(
+        config.thickness_candidates,
+        dtype=torch.float64,
+    )
+    weights = _thickness_loss_weights(thicknesses, config)
+    return {
+        "enabled": bool(config.training.thickness_loss_weight_power > 0.0),
+        "power": config.training.thickness_loss_weight_power,
+        "formula": (
+            "w(d) = (d_max / d)^power / "
+            "mean_candidates((d_max / d_candidate)^power)"
+        ),
+        "normalization": (
+            "arithmetic mean across configured TPS thickness candidates = 1"
+        ),
+        "applied_to": (
+            "combined per-sample field, bond, and structural-interface "
+            "training loss"
+        ),
+        "validation_and_checkpoint_selection_weighted": False,
+        "weights_by_thickness": [
+            {
+                "d_tps_m": float(thickness),
+                "weight": float(weight),
+            }
+            for thickness, weight in zip(thicknesses, weights)
+        ],
+        "minimum_weight": float(weights.min()),
+        "maximum_weight": float(weights.max()),
+        "maximum_to_minimum_ratio": float(weights.max() / weights.min()),
+    }
 
 
 def _structural_interface_trace(
@@ -88,9 +188,17 @@ def _structural_interface_trace(
 def _checkpoint_selection_metrics(
     validation: dict[str, Any],
 ) -> dict[str, Any]:
-    """Build a continuous checkpoint ranking independent of sign counts."""
+    """Rank training candidates on two-sided safety accuracy.
+
+    This remains a continuous training-time signal. Deployment selection is a
+    separate post-training step on a dedicated calibration cohort, where zero
+    false-feasible events are the first constraint.
+    """
     mean_error = float(validation["critical_mean_peak_error_K"])
-    tail_error = float(validation["optimistic_margin_error_p95_K"])
+    tail_error = float(validation["margin_error_p95_K"])
+    optimistic_tail_error = float(
+        validation["optimistic_margin_error_p95_K"]
+    )
     field_error = float(validation["field_rmse_K"])
     false_feasible = int(validation["false_feasible_count"])
     feasibility_disagreements = int(
@@ -105,13 +213,15 @@ def _checkpoint_selection_metrics(
     return {
         "strategy": (
             "continuous(critical_mean_peak_error_K + "
-            "optimistic_margin_error_p95_K, field_rmse_K, "
-            "critical_mean_peak_error_K); feasibility counts are reported "
-            "but are not training-time rank constraints"
+            "margin_error_p95_K, field_rmse_K, "
+            "critical_mean_peak_error_K); final deployment selection uses a "
+            "dedicated calibration cohort and zero false-feasible events as "
+            "the first constraint"
         ),
         "field_rmse_K": field_error,
         "critical_mean_peak_error_K": mean_error,
-        "optimistic_margin_error_p95_K": tail_error,
+        "margin_error_p95_K": tail_error,
+        "optimistic_margin_error_p95_K": optimistic_tail_error,
         "checkpoint_selection_score_K": score,
         "false_feasible_count": false_feasible,
         "false_infeasible_count": int(validation["false_infeasible_count"]),
@@ -131,11 +241,11 @@ def _meaningfully_improved(current: float, best: float) -> bool:
 def _pareto_frontier(
     checkpoints: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Return non-dominated epochs for field, peak, and optimistic-tail error."""
+    """Return non-dominated epochs for field, peak, and absolute-margin tail."""
     keys = (
         "field_rmse_K",
         "critical_mean_peak_error_K",
-        "optimistic_margin_error_p95_K",
+        "margin_error_p95_K",
     )
     frontier: list[dict[str, Any]] = []
     for candidate in checkpoints:
@@ -179,8 +289,11 @@ def train_model(
     set_seed(config.training.seed)
     resolved_device = resolve_device(device)
     bundle = load_dataset(data_dir)
-    if bundle.manifest["study_config_sha256"] != config.sha256:
-        raise ValueError("Dataset study configuration does not match the training configuration.")
+    if not dataset_matches_config(bundle, config):
+        raise ValueError(
+            "Dataset physics configuration does not match the training "
+            "configuration."
+        )
     train_loader, val_loader, _ = create_dataloaders(
         config,
         bundle,
@@ -232,6 +345,9 @@ def train_model(
         "epoch",
         "learning_rate",
         "train_loss",
+        "train_thickness_weight_mean",
+        "train_thickness_weight_min",
+        "train_thickness_weight_max",
         "val_field_rmse_K",
         "val_bond_peak_mae_K",
         "val_structural_peak_mae_K",
@@ -260,12 +376,12 @@ def train_model(
     continuous_bests = {
         "field_rmse_K": float("inf"),
         "critical_mean_peak_error_K": float("inf"),
-        "optimistic_margin_error_p95_K": float("inf"),
+        "margin_error_p95_K": float("inf"),
     }
     candidate_specs = {
         "lowest_field_rmse": "field_rmse_K",
         "lowest_critical_peak_error": "critical_mean_peak_error_K",
-        "lowest_optimistic_margin_tail": "optimistic_margin_error_p95_K",
+        "lowest_absolute_margin_tail": "margin_error_p95_K",
         "best_continuous_composite": "checkpoint_selection_score_K",
     }
     checkpoint_candidates: dict[str, dict[str, Any]] = {}
@@ -283,6 +399,9 @@ def train_model(
             model.train()
             total_loss = 0.0
             sample_count = 0
+            total_thickness_weight = 0.0
+            minimum_thickness_weight = float("inf")
+            maximum_thickness_weight = 0.0
             for batch in train_loader:
                 optimizer.zero_grad(set_to_none=True)
                 spatial = batch["spatial"].to(resolved_device)
@@ -296,14 +415,38 @@ def train_model(
                     ),
                 )
                 target = batch["target"].to(resolved_device)
-                loss = _training_loss(prediction, target, spatial, config)
+                thickness_weights = _thickness_loss_weights(
+                    batch["tps_thickness_m"].to(resolved_device),
+                    config,
+                )
+                loss = _training_loss(
+                    prediction,
+                    target,
+                    spatial,
+                    config,
+                    thickness_weights,
+                )
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.training.grad_clip)
                 optimizer.step()
                 batch_count = target.shape[0]
                 total_loss += float(loss.detach()) * batch_count
                 sample_count += batch_count
+                total_thickness_weight += float(
+                    thickness_weights.detach().sum()
+                )
+                minimum_thickness_weight = min(
+                    minimum_thickness_weight,
+                    float(thickness_weights.detach().min()),
+                )
+                maximum_thickness_weight = max(
+                    maximum_thickness_weight,
+                    float(thickness_weights.detach().max()),
+                )
             train_loss = total_loss / max(sample_count, 1)
+            mean_thickness_weight = (
+                total_thickness_weight / max(sample_count, 1)
+            )
             validation = evaluate_loader(
                 model,
                 val_loader,
@@ -338,6 +481,9 @@ def train_model(
                 "field_rmse_K": float(validation["field_rmse_K"]),
                 "critical_mean_peak_error_K": float(
                     validation["critical_mean_peak_error_K"]
+                ),
+                "margin_error_p95_K": float(
+                    validation["margin_error_p95_K"]
                 ),
                 "optimistic_margin_error_p95_K": float(
                     validation["optimistic_margin_error_p95_K"]
@@ -423,6 +569,9 @@ def train_model(
                 "epoch": epoch,
                 "learning_rate": learning_rate,
                 "train_loss": train_loss,
+                "train_thickness_weight_mean": mean_thickness_weight,
+                "train_thickness_weight_min": minimum_thickness_weight,
+                "train_thickness_weight_max": maximum_thickness_weight,
                 "val_field_rmse_K": validation["field_rmse_K"],
                 "val_bond_peak_mae_K": validation["bond_peak_mae_K"],
                 "val_structural_peak_mae_K": validation["structural_peak_mae_K"],
@@ -489,6 +638,9 @@ def train_model(
             "t0_in_training_targets": False,
             "t0_retained_in_validation": True,
         },
+        "tps_thickness_loss_weighting": (
+            _thickness_loss_weighting_report(config)
+        ),
         "best_epoch": int(best_checkpoint["epoch"]),
         "best_critical_mean_peak_error_K": final_validation[
             "critical_mean_peak_error_K"
@@ -532,7 +684,7 @@ def train_model(
         "early_stopping": {
             "strategy": (
                 "stop after configured patience when field RMSE, critical "
-                "mean peak error, and optimistic-margin P95 all fail to "
+                "mean peak error, and absolute-margin P95 all fail to "
                 "improve meaningfully"
             ),
             "patience": config.training.patience,

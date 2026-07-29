@@ -156,3 +156,7 @@ training:
   dropout: 0.0
   bond_loss_weight: 0.0
   interface_loss_weight: 0.0
+  # Moderate inverse-square-root weighting across the configured thickness
+  # strata. Candidate-set normalization keeps the mean training-loss scale at
+  # one while giving 3 mm cases 2.83x the weight of 24 mm cases.
+  thickness_loss_weight_power: 0.5

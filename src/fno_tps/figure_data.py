@@ -15,8 +15,8 @@ import json
 
 import numpy as np
 
-from fno_tps.config import StudyConfig
-from fno_tps.data import DatasetBundle, load_dataset
+from fno_tps.config import StudyConfig, inference_compatibility_sha256
+from fno_tps.data import DatasetBundle, dataset_matches_config, load_dataset
 from fno_tps.model import TRANSFER_SOURCE_REVISION
 from fno_tps.physics import TPSFVSolver
 from fno_tps.problem import SimulationCase
@@ -895,9 +895,13 @@ def build_figure_data(
     if needs_model:
         resolved_device = resolve_device(device)
         model, checkpoint = load_model_checkpoint(checkpoint_path, resolved_device)
-        if checkpoint["study"] != config.as_dict():
+        if (
+            inference_compatibility_sha256(checkpoint["study"])
+            != config.inference_compatibility_sha256
+        ):
             raise ValueError(
-                "Checkpoint study configuration does not match the figure configuration."
+                "Checkpoint inference configuration does not match the figure "
+                "configuration."
             )
         normalization = {
             key: float(value) for key, value in checkpoint["normalization"].items()
@@ -916,9 +920,10 @@ def build_figure_data(
     bundle = None
     if 1 in requested:
         bundle = load_dataset(data_dir)
-        if bundle.manifest["study_config_sha256"] != config.sha256:
+        if not dataset_matches_config(bundle, config):
             raise ValueError(
-                "Dataset study configuration does not match the figure configuration."
+                "Dataset physics configuration does not match the figure "
+                "configuration."
             )
         for key, value in normalization.items():
             if not np.isclose(value, bundle.normalization[key]):

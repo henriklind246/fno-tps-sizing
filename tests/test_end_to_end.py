@@ -42,6 +42,7 @@ def test_one_epoch_checkpoint_evaluation_and_sizing(
     )
     assert checkpoint["model_config"]["hard_initial_condition"]
     assert report["initial_condition"]["t0_in_training_targets"] is False
+    assert "tps_thickness_loss_weighting" in report
     assert report["checkpoint_archive"]["checkpoint_count"] == 1
     assert report["checkpoint_archive"]["model_only"]
     _, archived_checkpoint = load_model_checkpoint(
@@ -53,7 +54,7 @@ def test_one_epoch_checkpoint_evaluation_and_sizing(
     assert set(report["checkpoint_candidates"]) == {
         "lowest_field_rmse",
         "lowest_critical_peak_error",
-        "lowest_optimistic_margin_tail",
+        "lowest_absolute_margin_tail",
         "best_continuous_composite",
         "latest",
     }

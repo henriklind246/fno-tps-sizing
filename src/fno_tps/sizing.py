@@ -13,7 +13,7 @@ import torch
 import yaml
 
 from fno_tps.acceptance import assess_trajectory
-from fno_tps.config import StudyConfig
+from fno_tps.config import StudyConfig, inference_compatibility_sha256
 from fno_tps.data import TPSInputBuilder
 from fno_tps.physics import TPSFVSolver
 from fno_tps.problem import BondDefect, HeatingEvent, SimulationCase
@@ -220,8 +220,14 @@ def run_full_sizing(
         raise ValueError("Scenario set is non-production; pass allow_demo=True explicitly.")
     resolved_device = resolve_device(device)
     model, checkpoint = load_model_checkpoint(checkpoint_path, resolved_device)
-    if checkpoint["study"] != config.as_dict():
-        raise ValueError("Checkpoint study configuration does not match the sizing configuration.")
+    if (
+        inference_compatibility_sha256(checkpoint["study"])
+        != config.inference_compatibility_sha256
+    ):
+        raise ValueError(
+            "Checkpoint inference configuration does not match the sizing "
+            "configuration."
+        )
     normalization = {
         key: float(value) for key, value in checkpoint["normalization"].items()
     }

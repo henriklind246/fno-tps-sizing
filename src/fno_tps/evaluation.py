@@ -8,8 +8,13 @@ import json
 import numpy as np
 import torch
 
-from fno_tps.config import StudyConfig
-from fno_tps.data import DatasetBundle, create_dataloaders, load_dataset
+from fno_tps.config import StudyConfig, inference_compatibility_sha256
+from fno_tps.data import (
+    DatasetBundle,
+    create_dataloaders,
+    dataset_matches_config,
+    load_dataset,
+)
 from fno_tps.physics import TPSFVSolver
 from fno_tps.runtime import load_model_checkpoint, resolve_device
 
@@ -386,10 +391,19 @@ def evaluate_checkpoint(
         raise ValueError("calibration_quantile must lie in [0, 100].")
     bundle = load_dataset(data_dir)
     model, checkpoint = load_model_checkpoint(checkpoint_path, resolve_device(device))
-    if bundle.manifest["study_config_sha256"] != config.sha256:
-        raise ValueError("Dataset study configuration does not match the evaluation configuration.")
-    if checkpoint["study"] != config.as_dict():
-        raise ValueError("Checkpoint study configuration does not match the evaluation configuration.")
+    if not dataset_matches_config(bundle, config):
+        raise ValueError(
+            "Dataset physics configuration does not match the evaluation "
+            "configuration."
+        )
+    if (
+        inference_compatibility_sha256(checkpoint["study"])
+        != config.inference_compatibility_sha256
+    ):
+        raise ValueError(
+            "Checkpoint inference configuration does not match the evaluation "
+            "configuration."
+        )
     if "normalization" not in checkpoint:
         raise ValueError("Checkpoint does not contain its training normalization.")
     dataset_normalization = dict(bundle.normalization)

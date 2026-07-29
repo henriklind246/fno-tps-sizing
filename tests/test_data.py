@@ -8,6 +8,7 @@ import pytest
 from fno_tps.data import (
     CausalTargetDataset,
     TPSInputBuilder,
+    create_dataloaders,
     generate_dataset,
 )
 
@@ -160,6 +161,60 @@ def test_explicit_out_of_validity_case_is_rejected(
     )
     with pytest.raises(ValueError, match="hot_face_temperature_limit"):
         generate_dataset(demo_config, tmp_path / "invalid", cases=[invalid])
+
+
+def test_case_alternatives_preserve_slot_after_invalid_candidate(
+    tmp_path,
+    demo_config,
+    three_cases,
+):
+    from fno_tps.problem import HeatingEvent, SimulationCase
+
+    invalid = SimulationCase(
+        "invalid-primary",
+        three_cases[0].d_tps,
+        (
+            HeatingEvent(
+                amplitude=1.0e8,
+                y_center=0.10,
+                t_center=1.5,
+                sigma_y=0.025,
+                sigma_t=0.5,
+            ),
+        ),
+        (),
+    )
+    bundle = generate_dataset(
+        demo_config,
+        tmp_path / "alternative",
+        case_alternatives=[[invalid, three_cases[0]]],
+    )
+    assert len(bundle.cases) == 1
+    assert bundle.manifest["validity"]["rejected_case_count"] == 1
+    assert bundle.cases[0].d_tps == three_cases[0].d_tps
+
+
+def test_dataset_item_reports_physical_tps_thickness(
+    tmp_path,
+    demo_config,
+    three_cases,
+):
+    bundle = generate_dataset(
+        demo_config,
+        tmp_path / "thickness-item",
+        cases=three_cases,
+    )
+    loader, _, _ = create_dataloaders(
+        demo_config,
+        bundle,
+        "summary",
+        batch_size=2,
+    )
+    item = loader.dataset[0]
+    case_index = int(item["case_index"])
+    assert item["tps_thickness_m"].item() == pytest.approx(
+        bundle.cases[case_index].d_tps
+    )
 
 
 def test_balanced_generation_resamples_invalid_cases(

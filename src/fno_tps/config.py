@@ -757,6 +757,7 @@ class TrainingConfig:
     dropout: float
     bond_loss_weight: float
     interface_loss_weight: float
+    thickness_loss_weight_power: float
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "TrainingConfig":
@@ -780,6 +781,7 @@ class TrainingConfig:
             "dropout": 0.0,
             "bond_loss_weight": 0.0,
             "interface_loss_weight": 0.0,
+            "thickness_loss_weight_power": 0.0,
         }
         defaults.update(value)
         out = cls(**{
@@ -800,6 +802,14 @@ class TrainingConfig:
             out.temporal_samples,
         ) < 1:
             raise ValueError("Training counts must be positive.")
+        if (
+            not math.isfinite(out.thickness_loss_weight_power)
+            or out.thickness_loss_weight_power < 0.0
+        ):
+            raise ValueError(
+                "training.thickness_loss_weight_power must be finite and "
+                "nonnegative."
+            )
         return out
 
 
@@ -1290,6 +1300,10 @@ class StudyConfig:
             )
         if self.solver != SolverConfig.from_dict(None):
             payload["solver"] = asdict(self.solver)
+        # Preserve hashes/checkpoint compatibility for configurations created
+        # before optional thickness weighting existed.
+        if self.training.thickness_loss_weight_power == 0.0:
+            payload["training"].pop("thickness_loss_weight_power")
         return payload
 
     @property
@@ -1298,12 +1312,59 @@ class StudyConfig:
             json.dumps(self.as_dict(), sort_keys=True).encode("utf-8")
         ).hexdigest()
 
+    @property
+    def dataset_compatibility_sha256(self) -> str:
+        """Hash only settings that determine the stored FV dataset.
+
+        Training controls are intentionally excluded so a new optimizer, loss,
+        or architecture experiment can reuse the same authoritative
+        trajectories without weakening physics/configuration validation.
+        """
+        return dataset_compatibility_sha256(self.as_dict())
+
+    @property
+    def inference_compatibility_sha256(self) -> str:
+        """Hash settings that must match for checkpoint inference."""
+        return inference_compatibility_sha256(self.as_dict())
+
     def require_authoritative(self, allow_demo: bool = False) -> None:
         if not self.authoritative and not allow_demo:
             raise ValueError(
                 f"Study {self.study_id!r} is non-production. Pass allow_demo=True "
                 "only for an explicitly illustrative run."
             )
+
+
+def dataset_compatibility_sha256(
+    study: StudyConfig | dict[str, Any],
+) -> str:
+    """Hash the FV-generating study definition, excluding training controls."""
+    payload = (
+        study.as_dict()
+        if isinstance(study, StudyConfig)
+        else dict(study)
+    )
+    payload.pop("training", None)
+    return sha256(
+        json.dumps(payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def inference_compatibility_sha256(
+    study: StudyConfig | dict[str, Any],
+) -> str:
+    """Ignore loss-only controls that cannot affect checkpoint inference."""
+    payload = (
+        study.as_dict()
+        if isinstance(study, StudyConfig)
+        else dict(study)
+    )
+    training = dict(payload.get("training", {}))
+    training.pop("thickness_loss_weight_power", None)
+    payload["training"] = training
+    return sha256(
+        json.dumps(payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
 
 def _pair(value: Any) -> tuple[float, float]:
